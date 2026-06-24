@@ -24,6 +24,16 @@ Two principles carry most of the weight:
 - **Evidence before "done."** "Should work" is a claim, not a result. Every readiness statement needs a
   real run, a real response, a real health check behind it.
 
+## Why did I build this?
+
+Because I'm an ideot – I have lots of ideas. Some are good and some are bad.
+
+But no matter what I want to do, I have one big problem: *mistakes are costly*.
+
+We have eyes to visualise, not to follow instructions or files. That part is now for AI.
+
+So, rather than adding it at the end, I wanted to build verification in from the start.
+
 ## Why security is baked in
 
 > *"Most security problems in AI-coded apps aren't bad code — they're the agent not having the context
