@@ -83,11 +83,96 @@ The compact file is enough to hold the discipline; the full file is enough to ex
 
 ## How to use it
 
-1. Keep `Claude-Workflows-Best-Practices-Compact.md` loaded (drop it in your project, or load it as a skill / paste it at
-   the start of a session). Have `Claude-Workflows-Best-Practices.md` available for the agent to open per
-   phase.
-2. Tell the agent to follow it for the feature at hand.
-3. Hold the gates: a phase isn't approved until *you* write the confirmation. Don't let it skip ahead.
+**Shortcut — let Claude set it up for you.** Open Claude Code in your project and paste:
+
+> Fetch `Claude-Workflows-Best-Practices.md` and `Claude-Workflows-Best-Practices-Compact.md` from
+> https://github.com/larya-dot-eu/claude-workflows into the project root, then add the two hooks from
+> that repo's README to this project's `.claude/settings.json` (merge with existing settings; the hook
+> paths already point at the project root). Don't change anything else.
+
+Restart the session afterwards and approve the hooks when Claude Code asks.
+
+Or do it by hand — nothing activates on its own; cloning this repo just gives you the files. Setup in
+**your** project:
+
+1. Copy both workflow files into your project root (committed, so teammates get them too — don't put
+   them in a gitignored dir like `docs/`).
+2. Load the compact file each session — either paste it / reference it manually, or set up the hooks
+   below once and it loads automatically in every session of that project.
+3. Tell the agent to follow the workflow for the feature at hand.
+4. Hold the gates: a phase isn't approved until *you* write the confirmation. Don't let it skip ahead.
+
+Small, bounded changes (a typo, a config tweak, an obvious one-file fix) don't need the full pipeline —
+the workflow's **Task Tiers** section defines a quick tier that skips the planning phases but never the
+deploy gates.
+
+## Holding a gate — what to check before you write "approved"
+
+The gates only work if you actually read what you're approving. A rubber-stamped "approved" turns the
+whole workflow into ceremony. The minimum look per gate:
+
+- **Phase 1 (context):** is the summary actually *your* project, or a plausible-sounding generic one?
+- **Phase 3 (spec):** read the **assumptions** and the **access-control matrix** — those two sections are
+  where wrong specs hide. Is the expected-scale target your real number, or a made-up one you never confirmed?
+- **Phase 4 (plan):** read the answers to the five checkpoint questions. A bare "yes" without concrete
+  findings means the question wasn't really run.
+- **Phase 5 (adversarial review):** did it report concrete findings (file, step, broken state), or did it
+  praise the plan? Zero findings on a non-trivial plan is a red flag, not a pass.
+- **Phase 10 (deploy):** demand pasted evidence — the actual `401` response, the actual `Set-Cookie`
+  header, the actual `EXPLAIN` output. "Verified ✓" without output is a claim, not a result.
+
+## Optional: enforce the spine with hooks (no plugin needed)
+
+The workflow is instructions, and instructions can drift on long sessions. Two copy-paste
+[Claude Code hooks](https://docs.claude.com/en/docs/claude-code/hooks) harden it. Create
+`.claude/settings.json` **in your own project** (not in a clone of this repo — hooks are per-project
+config, and once set they fire in every session of that project; commit the file and your whole team
+gets them). Adjust the `cat` path to wherever you put the compact file:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cat \"$CLAUDE_PROJECT_DIR/Claude-Workflows-Best-Practices-Compact.md\""
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '[Workflow] phases in order; gate clears only on explicit user approval; absence != confirmation; evidence before done.'"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+- **SessionStart** injects the compact spine (~950 tokens, once, then prompt-cached) — and re-fires after
+  `/clear` and after auto-compaction, which is exactly when injected context would otherwise be lost. The
+  full workflow logic is always present without ever repeating it per prompt.
+- **UserPromptSubmit** re-pins only the four drift-prone rules (~20 tokens per prompt): phase order, no
+  self-cleared gates, absence ≠ confirmation, evidence before done. The content lives in the spine; this
+  line just keeps the discipline pinned on long sessions.
+
+Both are read-only and work with plain Claude Code — no plugin, nothing to install.
+
+Two things to expect on first use:
+
+- Claude Code doesn't silently run newly added project hooks — on the next session start it asks you to
+  review and approve them (also whenever they change outside the `/hooks` menu). Approve once; after
+  that they fire automatically.
+- Hook output is injected into the **agent's** context, not displayed in your chat — you won't see it on
+  screen. To verify it's firing, use `Ctrl+R` (transcript view), `/hooks` (lists registered hooks), or
+  `claude --debug`.
 
 ## License
 

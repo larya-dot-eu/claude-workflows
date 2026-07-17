@@ -5,16 +5,32 @@
 > Work through every phase in order. Do not skip phases. Do not proceed past an exit gate until it is explicitly cleared.
 >
 > **This is the full reference.** For everyday use, keep [`Claude-Workflows-Best-Practices-Compact.md`](./Claude-Workflows-Best-Practices-Compact.md) loaded as the always-on spine and read the matching section here when you enter a phase or need a full checklist — that keeps token cost and drift down on long sessions.
+>
+> **Sync rule:** this file and the compact spine are one spec in two forms. Any change to phases, gates, or checklists must land in both files in the same commit — a commit touching only one of them is the drift signal to look for in review.
+
+---
+
+## Task Tiers — pick before anything else
+
+Not every change earns the full pipeline. Name the tier you believe applies and let the user confirm it before starting:
+
+- **Full (default):** anything feature-shaped — new behavior, touches data boundaries, auth, schema, external services, or more than a couple of files. Run every phase in order.
+- **Quick (small, bounded changes):** a typo fix, a config tweak, a doc edit, an obvious one-file bug fix. Skip Phases 1–6. Instead:
+  1. State the blast radius — every file and caller the change touches, verified by opening them (for a bug fix, grep the callers of the function you're touching; the root-cause fix lives where all callers route through).
+  2. Make the change, with a test where the logic is non-trivial.
+  3. Verify with a real run, not by reading the diff.
+  Phases 8–10 still apply when the change ships: the deploy gates are never skipped — only the planning phases are.
+- **Escalation rule:** if a "quick" change grows — it touches a file you didn't name in the blast radius, raises a design question, or crosses a data boundary — stop and restart in the full tier. When unsure, default to full.
 
 ---
 
 ## Prerequisites — Load Before Starting
 
-Before Phase 1, load the following into context. If any are missing, stop and ask the user to provide them before continuing.
+Before Phase 1, load the following into context:
 
-- **`CLAUDE.md`** — architecture rules, stack conventions, coding patterns, explicit constraints, what NOT to do
-- **`ROADMAP.md`** — current project state, priorities, already-decided directions
-- **Relevant existing code** — any files, modules, or APIs the planned work touches or must follow
+- **`CLAUDE.md`** — architecture rules, stack conventions, coding patterns, explicit constraints, what NOT to do. If missing, stop and ask the user before continuing.
+- **`ROADMAP.md`** — current project state, priorities, already-decided directions. *Optional:* many projects have none — if absent, note that in your summary and continue; do not block on it.
+- **Relevant existing code** — any files, modules, or APIs the planned work touches or must follow. If you cannot locate the code the work touches, stop and ask.
 
 After loading, summarize to the user:
 - What you understand about the current project state
@@ -111,12 +127,12 @@ Report your findings explicitly to the user. Do not summarize as "looks good." I
 
 ### Output Format
 
-Two outputs, both saved to your spec directory — e.g. `docs/specs/`, or `docs/superpowers/specs/` if you run the [superpowers](https://github.com/obra/superpowers) plugin (gitignored — local only, never committed; if `CLAUDE.md` names a different path, use that):
+One required output, one optional companion — saved to your spec directory, e.g. `docs/specs/`, or `docs/superpowers/specs/` if you run the [superpowers](https://github.com/obra/superpowers) plugin (gitignored — local only, never committed; if `CLAUDE.md` names a different path, use that):
 
-**1. Markdown spec (primary — for Claude):**
-`YYYY-MM-DD-[feature-name]-design.md` — structured prose with headers covering behavior, interfaces, edge cases, transactional integrity, assumptions, the access-control matrix, and the expected-scale target. This is what future sessions read.
+**1. Markdown spec (required — for Claude):**
+`YYYY-MM-DD-[feature-name]-spec.md` — structured prose with headers covering behavior, interfaces, edge cases, transactional integrity, assumptions, the access-control matrix, and the expected-scale target. This is what future sessions read — and what Phase 4 builds the plan from: spec first, plan derived from it.
 
-**2. HTML visual companion (for human review if asked by the user):**
+**2. HTML visual companion (optional — generate only when the user asks for it, never unprompted):**
 `spec-[feature-name].html` — self-contained styled file generated from the same content. Must include:
 - Sticky sidebar navigation linking to each section
 - Color-coded sections: behavior (blue), interfaces (green), edge cases (amber), assumptions (red), access-control matrix (purple), expected scale (teal)
@@ -153,12 +169,12 @@ Fix any issues found before proceeding.
 
 ### Output Format
 
-Two outputs, both saved to your plans directory — e.g. `docs/plans/`, or `docs/superpowers/plans/` if you run the superpowers plugin (gitignored — local only, never committed; if `CLAUDE.md` names a different path, use that):
+One required output, one optional companion — saved to your plans directory, e.g. `docs/plans/`, or `docs/superpowers/plans/` if you run the superpowers plugin (gitignored — local only, never committed; if `CLAUDE.md` names a different path, use that):
 
-**1. Markdown plan (primary — for Claude):**
+**1. Markdown plan (required — for Claude):**
 `YYYY-MM-DD-[feature-name]-plan.md` — ordered steps with exit states and verification methods. This is what future sessions execute from.
 
-**2. HTML visual companion (for human review if asked by the user):**
+**2. HTML visual companion (optional — generate only when the user asks for it, never unprompted):**
 `plan-[feature-name].html` — self-contained styled file generated from the same content. Must include:
 - Sticky sidebar navigation with phase links
 - Color-coded phases: exploration (purple), spec (blue), plan (green), review (red), TDD (orange), implementation (teal)
@@ -270,10 +286,16 @@ After each phase and after every major step, update:
 - **`CLAUDE.md`** — if new patterns or constraints were established during this session, and the **access-control matrix** and **expected-scale target** from Phase 3 (write both in as first-class sections, not passing notes — this is the expected-behavior and load context that stops the next session from re-introducing access holes or demo-shaped, non-scaling decisions)
 - **`ROADMAP.md`** — if priorities or direction shifted
 
-### Context Window Rule
+### Session Checkpoint Rule
 
-At approximately 80% context window usage, stop and say:
-> *"We are approaching context limits. I will update the living work plan now so this session can be resumed without loss."*
+You cannot reliably measure your own context window, so do not wait for a percentage. Checkpoint on observable triggers instead — whenever any of these occur:
+
+- an exit gate is cleared (the phase's results are final — capture them now)
+- the harness warns that context is running low, or compacts/summarizes the conversation
+- the user says the session is getting long, or hands off to another session
+
+Say:
+> *"Checkpointing the living work plan now so this session can be resumed without loss."*
 
 Write the update so that a fresh session with no conversation history can resume work immediately from the document alone.
 
@@ -297,6 +319,11 @@ Verification is not just testing. Implementation passing tests is NOT done. A de
   - **Rate limiting:** active on public endpoints.
   - **Error hygiene:** unhandled errors return a generic message — no stack trace, query, or internal path leaks to the client.
   - **CORS:** restricted to the expected origin(s), not `*`, on credentialed endpoints.
+
+  **Non-web profiles.** The rows above are written for a web app. If the artifact is another shape, name the matching profile once instead of justifying rows one by one — the rows a profile keeps are still checked with real evidence:
+  - **CLI tool:** auth, cookies, IDOR, rate limiting, CORS → N/A. Still checked: input validation (untrusted args, files, env), secrets (none in the binary, repo, or logs), error hygiene (no secret-leaking traces), parameterized queries if it touches a database.
+  - **Library / package:** endpoint rows → N/A. Still checked: input validation at the public API boundary, no secrets in the published artifact, error hygiene, and no unexpected new dependencies in the lockfile.
+  - **Data pipeline / job:** cookies, CORS → N/A. Still checked: secrets, parameterized queries, input validation on ingested data — plus the operational-readiness gate below in full (idempotency on retry stands in for rate limiting).
 
   A failure here blocks the deploy. Route it back like any other finding: an enforcement bug → fix in code; a missing rule in the matrix → back to Phase 3.
 - **Pass the operational-readiness gate before deploying.** The security gate proves it is safe; this proves it survives load. Check against the Phase 3 expected-scale target:
@@ -328,23 +355,24 @@ Verification is not just testing. Implementation passing tests is NOT done. A de
 ## Quick Reference
 
 ```
-Prerequisites    Load CLAUDE.md, ROADMAP.md, relevant code — confirm with user
+Tier check       Full pipeline (default) | Quick (small bounded change): blast radius → change+test → real-run verify; deploy gates never skipped
+Prerequisites    Load CLAUDE.md, ROADMAP.md (optional), relevant code — confirm with user
 
 Phase 1          Context Priming       Confirm project understanding — user approves before Phase 2
 Phase 2          Exploration           Ask only — define why + constraints + what's different
                  EXIT GATE             All 3 questions answered clearly before Phase 3
 Phase 3          Spec Writing          Behavior, interfaces, edge cases, assumptions + access-control matrix + expected scale
                  CHECKPOINT            Spec vs. codebase: conflicts + unverified assumptions fixed
-                 OUTPUT                spec-[feature].html — sidebar nav, color-coded, assumption warnings, checklist
+                 OUTPUT                YYYY-MM-DD-[feature]-spec.md (+ optional spec-[feature].html only if asked)
 Phase 4          Plan Writing          Ordered steps with exit states and verification
                  CHECKPOINT            5 adversarial questions answered with specific findings
-                 OUTPUT                plan-[feature].html — step cards, SVG dependency graph, checkpoint checklist
+                 OUTPUT                YYYY-MM-DD-[feature]-plan.md (+ optional plan-[feature].html only if asked)
 Phase 5          Adversarial Review    Break the plan + abuse-case pass (security) + scale pass (load)
                  LOOP-BACK             Surface fix → Ph.4 | Arch issue → Ph.3 | Wrong problem → Ph.2
 Phase 6          TDD Planning          Interfaces + test priority agreed before any code written
 Phase 7          TDD Implementation    Red→Green→Refactor, vertical slices, scope creep rule enforced
 Phase 8          Post-Implementation   Plan vs. reality, doc updates flagged
-Phase 9          Living Doc Update     After each phase + proactively at ~80% context
+Phase 9          Living Doc Update     After each phase + on checkpoint triggers (gate cleared, context warning, user signal)
 Phase 10         Deployment & Release  Prove artifact locally → pass security + operational-readiness gates → deploy → confirm health → then merge/seed/announce
 Cross-phase      Execution Discipline  Honor skill checklists · open files before citing · verify before claiming ready
 ```
