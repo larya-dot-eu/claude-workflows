@@ -3,6 +3,8 @@
 A single, battle-tested process file for using an AI coding agent (Claude Code, Cursor, etc.) on real
 features without shipping self-inflicted outages or security holes.
 
+**Version:** [v1.1.0](https://github.com/larya-dot-eu/claude-workflows/releases/tag/v1.1.0) — see [Releases](https://github.com/larya-dot-eu/claude-workflows/releases) for changelog.
+
 **→ [`Claude-Workflows-Best-Practices.md`](./Claude-Workflows-Best-Practices.md)**
 
 ## What it is
@@ -63,7 +65,7 @@ monitoring + alerting live) before the deploy goes out.
 | Tool | Adds | Used in |
 |------|------|---------|
 | [gstack](https://github.com/garrytan/gstack) | Planning, review, and ship/deploy skills (`/spec`, `/ship`, `/review`) | Phases 3–4, 7, 10 |
-| [superpowers](https://github.com/obra/superpowers) | TDD + plan-execution skills (`executing-plans`, `subagent-driven-development`, `test-driven-development`) | Phases 6–7 |
+| [superpowers](https://github.com/obra/superpowers) | Default skill for exploration (`brainstorming`), planning (`writing-plans`), workspace isolation (`using-git-worktrees`), and TDD + plan-execution (`executing-plans`, `subagent-driven-development`, `test-driven-development`) | Phases 2, 4, 6–7 |
 | [context7](https://github.com/upstash/context7) | Live, version-correct library docs via MCP — backs "open the source before you cite it" | Phases 1–7 |
 | [ponytail](https://github.com/DietrichGebert/ponytail) | Laziest-solution-that-works discipline — fights over-engineering during implementation | Phase 7 |
 | [caveman](https://github.com/JuliusBrussee/caveman) *(optional)* | Terse, token-light output; also the style of the compact spine file | Any phase |
