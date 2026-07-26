@@ -10,15 +10,15 @@ Always-on spine. Full detail/rationale/output-formats: **`Claude-Workflows-Best-
 
 - **0 · Prereqs** — load `CLAUDE.md`, `ROADMAP.md` (optional — if absent, note + continue), touched code; summarize understanding → user confirms.
 - **1 · Context Priming** — state architecture, constraints, conventions, prior decisions → user confirms picture.
-- **2 · Exploration** — ask only, propose nothing → can answer: exact problem? constraints? what different?
+- **2 · Exploration** — mandatory before creative work: superpowers `brainstorming`. Ask only, propose nothing → can answer: exact problem? constraints? what different?
 - **3 · Spec** — behavior · interfaces · edge cases · **transactional integrity** (atomic vs eventual) · assumptions · **access-control matrix** · **expected scale**. If auth tokens/sessions: ask *"stolen credential revocable instantly?"* → spec verified vs codebase, no unverified assumptions → user approves.
-- **4 · Plan** — ordered steps, each with exit-state + how verified → answer 5 checkpoint Qs with findings → user approves.
+- **4 · Plan** — default skill: superpowers `writing-plans` (fallback: gstack `/plan`). Ordered steps, each with exit-state + how verified → answer 5 checkpoint Qs with findings → user approves.
 - **5 · Adversarial Review** — break plan. + **security abuse pass** (IDOR, RLS, authz, unvalidated input) + **scale pass** (what melts at peak ×10). Loop back: surface → P4, architectural → P3, wrong problem → P2; >⅓ steps reworked → restart P3 → structurally sound → user approves.
 - **6 · TDD Planning** — interfaces + test priority; write top-3 RED tests into real suite → agreed, no impl yet.
-- **7 · TDD Impl** — vertical slices, Red→Green→Refactor, no scope creep; regression stops everything → all steps done, tests green.
+- **7 · TDD Impl** — isolated workspace first (superpowers `using-git-worktrees`, else feature branch by hand — never the session's starting branch). Vertical slices, Red→Green→Refactor, no scope creep; regression stops everything → all steps done, tests green.
 - **8 · Post-Impl Review** — plan vs reality; flag doc updates → reported → user sign-off.
 - **9 · Living Docs** — update work plan + `CLAUDE.md` (carry access-control matrix + scale target) + `ROADMAP.md`. Checkpoint on triggers (gate cleared · harness context warning/compaction · user says session long) so fresh session resumes from doc alone — don't wait for a context percentage.
-- **10 · Deploy** — prove artifact boots locally → pass **security gate** → pass **ops gate** → deploy → confirm health → **then** merge/seed/announce. Irreversible/outward actions last.
+- **10 · Deploy** — prove artifact boots locally → pass **security gate** → pass **ops gate** → deploy → confirm health → **then** merge/seed/announce. Irreversible/outward actions last. Land through a PR, never a direct push to default branch — no exception for "trivial."
 
 ## Phase 10 — Security gate
 

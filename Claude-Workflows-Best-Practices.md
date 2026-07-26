@@ -58,6 +58,8 @@ Do not proceed to Phase 2 until the user confirms.
 
 ## Phase 2 — Exploration (PM Mode)
 
+**Exploration skill:** mandatory before any creative work — new features, components, functionality, or behavior changes. Default to the **superpowers** `brainstorming` skill for this phase. With it not installed, run the exploration questions below by hand.
+
 Your role in this phase is to ask clarifying questions only. Do not propose solutions. Do not write specs. Do not suggest implementations.
 
 Ask the user to define:
@@ -148,6 +150,8 @@ One required output, one optional companion — saved to your spec directory, e.
 Break the verified spec into ordered, executable steps.
 Build verification in from the start, not bolt it at the end.
 
+**Planning skill:** default to the **superpowers** `writing-plans` skill for this phase. If it is not installed, fall back to **gstack** (`/plan`, or `/plan-eng-review` / `/plan-devex-review` for a review pass). With neither installed, follow the step structure below by hand.
+
 Each step must include:
 - What code changes or actions are required
 - The exit state after this step — is the codebase in a consistent or broken state between steps?
@@ -236,6 +240,8 @@ Do not create a new TDD document. Split the output by what each piece actually i
 ---
 
 ## Phase 7 — TDD Implementation
+
+**Isolation:** before executing, ensure an isolated workspace exists — the **superpowers** `using-git-worktrees` skill (native tool, or git worktree fallback) if installed; otherwise a feature branch by hand. Do not implement directly on the branch you started the session on.
 
 **Execution skill:** drive this phase with a plan-execution + TDD process. Public options that implement this discipline: the **superpowers** skills (`executing-plans` for review-checkpoint structure, `subagent-driven-development` for lean-context per-task subagents, `test-driven-development` for the Red→Green→Refactor loop), or **gstack** (`/spec`, `/ship`). The per-feature plan names which; with neither installed, run the Red→Green→Refactor loop below by hand.
 
@@ -335,6 +341,7 @@ Verification is not just testing. Implementation passing tests is NOT done. A de
   A failure here blocks the deploy. A schema/index/statelessness gap routes back to Phase 3 — it is a design fix, not a deploy tweak.
 - **Green checks prove only what they exercise.** Automated checks that don't build and boot the *actual deployable artifact* say nothing about whether it ships — they can pass while the shipped build is broken. Name what your checks do **not** cover (the real artifact, the real entrypoint, the real runtime) and close that gap by hand before deploying.
 - **Automated checks are advisory unless the host enforces them as a required gate — know which yours is.** If merges aren't blocked on red or pending checks, a human must confirm every check is green (not pending, not skipped) before merging. Reading a green dashboard or an un-blocked merge control is not the same as confirming the checks actually passed.
+- **Never push straight to the default branch.** Every change — regardless of how small it looks — lands through a pull request, so CI runs before the code merges. A "trivial" direct push is exactly the case that skips the gate that would have caught it.
 - **Re-validate the deploy procedure against current code — don't trust a stale note.** A deploy command that worked before can break when imports/dependencies/structure change. Ask explicitly: *"does this build include everything the app imports?"* before running it.
 - **Irreversible/outward actions go LAST, after verification.** Do not merge to the main branch, write to production data, or deploy until the riskiest unknown is proven. Correct order: verify artifact → deploy → confirm health → then merge/seed/announce. Never sequence a merge or a prod data write ahead of "does it even boot?"
 - **Watch the new deployment's health before declaring success.** A "deploy complete" message is not a healthy service. Confirm health + routes + (where possible) a real end-to-end call before telling anyone it's ready.
@@ -359,7 +366,7 @@ Tier check       Full pipeline (default) | Quick (small bounded change): blast r
 Prerequisites    Load CLAUDE.md, ROADMAP.md (optional), relevant code — confirm with user
 
 Phase 1          Context Priming       Confirm project understanding — user approves before Phase 2
-Phase 2          Exploration           Ask only — define why + constraints + what's different
+Phase 2          Exploration           Mandatory: superpowers brainstorming · Ask only — define why + constraints + what's different
                  EXIT GATE             All 3 questions answered clearly before Phase 3
 Phase 3          Spec Writing          Behavior, interfaces, edge cases, assumptions + access-control matrix + expected scale
                  CHECKPOINT            Spec vs. codebase: conflicts + unverified assumptions fixed
@@ -370,10 +377,10 @@ Phase 4          Plan Writing          Ordered steps with exit states and verifi
 Phase 5          Adversarial Review    Break the plan + abuse-case pass (security) + scale pass (load)
                  LOOP-BACK             Surface fix → Ph.4 | Arch issue → Ph.3 | Wrong problem → Ph.2
 Phase 6          TDD Planning          Interfaces + test priority agreed before any code written
-Phase 7          TDD Implementation    Red→Green→Refactor, vertical slices, scope creep rule enforced
+Phase 7          TDD Implementation    Isolated workspace first (worktree/branch) · Red→Green→Refactor, vertical slices, scope creep rule enforced
 Phase 8          Post-Implementation   Plan vs. reality, doc updates flagged
 Phase 9          Living Doc Update     After each phase + on checkpoint triggers (gate cleared, context warning, user signal)
-Phase 10         Deployment & Release  Prove artifact locally → pass security + operational-readiness gates → deploy → confirm health → then merge/seed/announce
+Phase 10         Deployment & Release  Prove artifact locally → pass security + operational-readiness gates → deploy → confirm health → then merge/seed/announce · PR only, never direct push to default branch
 Cross-phase      Execution Discipline  Honor skill checklists · open files before citing · verify before claiming ready
 ```
 
