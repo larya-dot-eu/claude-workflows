@@ -277,6 +277,8 @@ Check:
 - Did any edge cases appear during implementation that were not in the spec?
 - Does `ROADMAP.md` need updating if direction shifted?
 
+If no divergence from the plan is found, state that explicitly ("no divergence found") rather than leaving it implied by silence — an unstated "no issues" and an unchecked item look identical in a log.
+
 Report findings to the user. Flag any recommended doc updates.
 
 **Rollback signal:** If the implementation diverged significantly from the plan without documented reasoning, treat this as a signal that the spec or adversarial review was insufficient. Note this for the next planning session.

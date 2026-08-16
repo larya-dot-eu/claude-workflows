@@ -16,7 +16,7 @@ Always-on spine. Full detail/rationale/output-formats: **`Claude-Workflows-Best-
 - **5 · Adversarial Review** — break plan. + **security abuse pass** (IDOR, RLS, authz, unvalidated input) + **scale pass** (what melts at peak ×10). Loop back: surface → P4, architectural → P3, wrong problem → P2; >⅓ steps reworked → restart P3 → structurally sound → user approves.
 - **6 · TDD Planning** — interfaces + test priority; write top-3 RED tests into real suite → agreed, no impl yet.
 - **7 · TDD Impl** — isolated workspace first (superpowers `using-git-worktrees`, else feature branch by hand — never the session's starting branch). Vertical slices, Red→Green→Refactor, no scope creep; regression stops everything → all steps done, tests green.
-- **8 · Post-Impl Review** — plan vs reality; flag doc updates → reported → user sign-off.
+- **8 · Post-Impl Review** — plan vs reality; flag doc updates. No divergence found → say so explicitly, don't leave it implied by silence → reported → user sign-off.
 - **9 · Living Docs** — update work plan + `CLAUDE.md` (carry access-control matrix + scale target) + `ROADMAP.md`. Checkpoint on triggers (gate cleared · harness context warning/compaction · user says session long) so fresh session resumes from doc alone — don't wait for a context percentage.
 - **10 · Deploy** — prove artifact boots locally → pass **security gate** → pass **ops gate** → deploy → confirm health → **then** merge/seed/announce. Irreversible/outward actions last. Land through a PR, never a direct push to default branch — no exception for "trivial."
 
