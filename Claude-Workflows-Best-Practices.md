@@ -71,6 +71,7 @@ While exploring, surface:
 - Ambiguities and unstated assumptions
 - Which parts of the existing codebase are affected
 - Anything in the existing code that complicates the request
+- **Prior solutions already in the codebase** — search for existing implementations of this same *kind* of problem (similar functions, components, data flows, CSS/utility classes). List every candidate, even partial matches. If none exist, say so explicitly — absence established by searching, not assumed.
 
 **Exit gate (hard stop):** Before proceeding to Phase 3, you must be able to answer all three:
 1. What is the exact problem being solved?
@@ -91,6 +92,8 @@ Write a spec that covers:
 - Assumptions you are making — state them explicitly
 - **Access-control matrix** (see below) — who is allowed to do and see what
 - **Expected scale** (see below) — the load this is designed to survive
+- **Reuse** — name the existing functions, components, modules, or styles this builds on instead of re-implementing. If the work is genuinely net-new, state why nothing existing fits.
+- **Presentation vs. logic** — any value a designer or you would tweak without touching logic (colors, fonts, spacing, copy strings, thresholds, feature flags) belongs in CSS/theme/config, never hardcoded inline. If no config point exists yet for it, creating one is part of the change.
 
 ### Access-Control Matrix (security-relevant expected behavior)
 
@@ -201,6 +204,7 @@ Check:
 - **Re-attack the plan's own flagged risks first.** Any claim the plan marked "most likely wrong" or "verify on contact" gets opened and confirmed against source in *this* review — it is the first thing to break, not the thing deferred to execution.
 - **Run an abuse-case pass against the access-control matrix.** The checks above attack correctness; now attack security. For each endpoint or data path the plan touches, ask how an attacker abuses it: Can one user reach another user's records by changing an ID (IDOR)? Is the ownership rule enforced at the database (row-level security), or only in app code that a crafted request skips? Can a protected route be hit unauthenticated, or an admin route reached by header/path tricks? Is any input trusted before server-side validation? Every "allowed" cell in the matrix needs a plan step that enforces it; every gap is a finding.
 - **Run a scale pass against the expected-scale target.** Now attack load. Take the Phase 3 numbers and ask what melts at peak ×10: Does a hot-path query run without an index, or scan/join a large table? Will a table grow unbounded with no archival or pagination? Is any per-user/session state held in process memory, so it breaks the moment there's a second replica or a restart? Is the schema shaped for the demo (the convenient join) rather than the access pattern? Each one is a design finding to fix in the plan now — these do not patch cleanly after the schema and traffic are real.
+- **Run a reinvention-and-hardcoding pass.** Does any step write logic the codebase already has — the reuse candidates from Phase 2/3? Reuse them or state why not. Does any step hardcode a color, copy string, threshold, or flag that belongs in CSS/theme/config? Each is a finding: route to Phase 4 to reroute through the existing code or a config point. This is a design finding — cheaper here than after the code is written.
 
 ### Loop-Back Decision
 
@@ -275,6 +279,7 @@ Check:
 - Did the implementation match the plan? If not, document what changed and why.
 - Did any new constraints or patterns surface that should be added to `CLAUDE.md`?
 - Did any edge cases appear during implementation that were not in the spec?
+- Did the implementation duplicate logic that already existed elsewhere, or inline a value that belongs in config? Duplication is often only visible once the code is written.
 - Does `ROADMAP.md` need updating if direction shifted?
 
 If no divergence from the plan is found, state that explicitly ("no divergence found") rather than leaving it implied by silence — an unstated "no issues" and an unchecked item look identical in a log.
@@ -370,13 +375,13 @@ Prerequisites    Load CLAUDE.md, ROADMAP.md (optional), relevant code — confir
 Phase 1          Context Priming       Confirm project understanding — user approves before Phase 2
 Phase 2          Exploration           Mandatory: superpowers brainstorming · Ask only — define why + constraints + what's different
                  EXIT GATE             All 3 questions answered clearly before Phase 3
-Phase 3          Spec Writing          Behavior, interfaces, edge cases, assumptions + access-control matrix + expected scale
+Phase 3          Spec Writing          Behavior, interfaces, edge cases, assumptions + access-control matrix + expected scale + reuse + config boundaries
                  CHECKPOINT            Spec vs. codebase: conflicts + unverified assumptions fixed
                  OUTPUT                YYYY-MM-DD-[feature]-spec.md (+ optional spec-[feature].html only if asked)
 Phase 4          Plan Writing          Ordered steps with exit states and verification
                  CHECKPOINT            5 adversarial questions answered with specific findings
                  OUTPUT                YYYY-MM-DD-[feature]-plan.md (+ optional plan-[feature].html only if asked)
-Phase 5          Adversarial Review    Break the plan + abuse-case pass (security) + scale pass (load)
+Phase 5          Adversarial Review    Break the plan + abuse-case pass (security) + scale pass (load) + reinvention/hardcode pass
                  LOOP-BACK             Surface fix → Ph.4 | Arch issue → Ph.3 | Wrong problem → Ph.2
 Phase 6          TDD Planning          Interfaces + test priority agreed before any code written
 Phase 7          TDD Implementation    Isolated workspace first (worktree/branch) · Red→Green→Refactor, vertical slices, scope creep rule enforced
