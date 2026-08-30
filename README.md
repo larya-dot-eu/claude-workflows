@@ -56,6 +56,17 @@ target** (traffic, data volume, where state lives), Phase 5 runs a **scale pass*
 ×10?), and Phase 10 holds an **operational-readiness gate** (indexes on hot queries, stateless app,
 monitoring + alerting live) before the deploy goes out.
 
+## Why reuse and simplicity are baked in too
+
+The third recurring failure isn't a crash or a breach — it's the agent cheerfully rebuilding something
+you already have, or hardcoding a color and a label into logic where a config value belonged. Both are
+invisible until someone reads the diff. So reuse rides the same touchpoints as security and scale:
+Phase 2 runs a **prior-solution search** (find what already exists before proposing new code), Phase 3
+records what's **reused** and keeps tweakable values (colors, copy, thresholds, flags) in config not
+inlined, Phase 5 runs a **reinvention-and-hardcoding pass**, and Phase 8 catches the duplication that
+only shows up once the code is written. Kept deliberately off the quick tier — trivial changes stay
+trivial.
+
 ## Requirements
 
 **Required:** an AI coding agent that reads Markdown and follows instructions — [Claude Code](https://claude.com/product/claude-code) is the reference target (works in Cursor and similar too). Nothing to install; the workflow is plain Markdown you load into context.
