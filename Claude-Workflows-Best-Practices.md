@@ -225,10 +225,17 @@ Check:
 Do not start this phase until Phase 5 is complete and the plan is structurally sound. Designing tests against a broken plan wastes the work.
 
 Define before writing any implementation code:
-- What interface changes are needed? (functions, methods, APIs, data shapes)
+- What interface changes are needed? (concrete function/method signatures, input contracts, APIs, return types/shapes)
 - Which behaviors must be tested first? (critical paths, complex logic, integration points)
-- Can each component have a deep module design? (small interface, complex logic inside)
 - Can each component be designed for testability? (inject dependencies, return results instead of side effects, no hidden state)
+- Architectural testability: Can each component have a deep module design (small interface, rich hidden logic)?
+- Are dependencies injected?
+- Are functions pure/returning results rather than relying on hidden side effects?
+- Path coverage breakdown: Map out the test matrix per component across:
+  * Happy Path (nominal baseline)
+  * Sad/Error Path (explicit domain errors, failed validations, thrown exceptions)
+  * Edge/Boundary Path (empty sets, min/max limits, zero/null values)
+- Mocking strategy: Keep tests social where possible; only mock non-deterministic elements (time, UUIDs) and external I/O boundaries (network, databases). Do not mock domain logic.
 
 Output a prioritized list of behaviors to test with interface definitions agreed.
 
@@ -236,10 +243,21 @@ Output a prioritized list of behaviors to test with interface definitions agreed
 
 Do not create a new TDD document. Split the output by what each piece actually is:
 
-- **Interface definitions + prioritized behavior list** — append a `## TDD` section to the existing Phase 4 plan file (`<plans-dir>/YYYY-MM-DD-[feature-name]-plan.md`): concrete signatures and the prioritized behavior list with rationale. Test priority is plan material; it lives with the plan.
-- **Failing test stubs for the top 3 behaviors** — write these directly into the project's test suite (wherever this repo keeps tests — e.g. `tests/`, `core/tests/`, `backend/tests/`) as real failing (RED) tests. Do not transcribe stubs into a doc — a stub in markdown only has to be retyped as a real test in Phase 7. These stubs *are* the start of Phase 7's RED step.
+- **Interface definitions + Prioritized Test Matrix** — append a `## TDD` section to the existing Phase 4 plan file (`<plans-dir>/YYYY-MM-DD-[feature-name]-plan.md`):
+  * Concrete type signatures and data models.
+  * Numbered, ordered list of behaviors using the ZOMBIES progression (Zero/One/Many/Boundaries/Exceptions).
+  * Categorization tag for each behavior: `[Happy]`, `[Sad]`, `[Edge]`.
 
-**Exit gate:** Interface design agreed with the user. Test priority order defined (in the plan file). The top-3 failing test stubs written as real RED tests in the test suite. No implementation code written yet.
+- **Failing test stubs for the top 3 critical behaviors** — write these directly into the project's test suite (e.g. `tests/`, `backend/tests/`):
+  * The top 3 tests must not all be happy paths: include at least 1 nominal path and 1 error/boundary path.
+  * Structure each test strictly using AAA (Arrange, Act, Assert).
+  * Use clear descriptive naming: `should_[expected_behavior]_when_[state_or_condition]`.
+  * Ensure the code compiles/parses, but the test assertion fails cleanly on behavior (`AssertionError` / failed expectation, NOT an unhandled runtime syntax crash).
+
+**Exit gate:** 
+1. Interface design and test order agreed with user.
+2. The 3 test stubs are written in the real test runner and confirmed to be in a legitimate RED state (failing on assertion, not syntax).
+3. Strictly zero implementation/production code written yet.
 
 ---
 
