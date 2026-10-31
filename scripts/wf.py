@@ -32,7 +32,7 @@ PHASE_NAMES = {0: "Tier + Prereqs", 1: "Context", 2: "Explore", 3: "Spec", 4: "P
 
 HELP = ("/wf commands: `/wf on [lite|standard|strict]`, `/wf off`, `/wf pause`, `/wf resume`, "
         "`/wf lite|standard|strict`, `/wf default <level>`, `/wf status`, `/wf <0-10>` (jump to a phase), "
-        "`/wf new` (new feature, back to the tier check), `/wf statusline`.")
+        "`/wf new` (new feature, back to the tier check), `/wf dirs <spec> <plan>`, `/wf statusline`.")
 
 
 # ---------------------------------------------------------------- documents
@@ -340,12 +340,13 @@ def parse_command(prompt):
     m = CMD_RE.match(prompt or "")
     if not m:
         return None
-    args = (m.group(1) or "").lower().split()
+    args = (m.group(1) or "").split()          # case kept: '/wf dirs' takes folder names
     if not args:
         return ("status", [])
     if args[0].isdecimal() and args[0].isascii():
         return ("phase", [args[0]])
-    return (args[0], args[1:])
+    cmd = args[0].lower()
+    return (cmd, args[1:] if cmd == "dirs" else [a.lower() for a in args[1:]])
 
 
 def run_command(cmd, args, state, store, env, cwd):
@@ -359,7 +360,7 @@ def run_command(cmd, args, state, store, env, cwd):
         state["enabled"] = "on"
         guess = ""
         if state["phase"] is None and state["level"] != "lite":
-            n, why = guess_phase(cwd, state.get("completed_at") or 0)
+            n, why = guess_phase(cwd, state.get("completed_at") or 0, state.get("dirs"))
             if n is not None:
                 state.update(phase=n, injected=n)
                 guess = (f"\n\nNo saved phase for this branch on this machine; {why}. Ask the user: "
@@ -388,6 +389,12 @@ def run_command(cmd, args, state, store, env, cwd):
     if cmd == "status":
         tl = timeline_text(state) if state["phase"] is not None else ""
         return None, f"{tell}workflow skin {describe(state)}." + (f" Timeline: {tl}." if tl else "")
+    if cmd == "dirs":
+        if len(args) == 2:
+            state["dirs"] = {"spec": args[0], "plan": args[1]}
+            return state, f"{tell}spec folder `{args[0]}`, plan folder `{args[1]}` (relative to the repo root)."
+        cur = state.get("dirs") or {k: " or ".join(v) for k, v in DEFAULT_DIRS.items()}
+        return None, f"{tell}spec folder {cur['spec']}, plan folder {cur['plan']}. Change: `/wf dirs <spec> <plan>`."
     if cmd == "statusline":
         return None, "Show the user this, verbatim:\n\n" + statusline_snippet(env)
     if cmd == "phase":
@@ -472,8 +479,33 @@ def items_for(n, env, cwd):
 
 
 # Phases whose gate claims are cross-checked against a file (the others are judged from the message).
-PHASE_FILES = {3: ("docs/superpowers/specs", "docs/specs"),
-               **{n: ("docs/superpowers/plans", "docs/plans") for n in (4, 6, 7)}}
+DEFAULT_DIRS = {"spec": ("docs/superpowers/specs", "docs/specs"), "plan": ("docs/superpowers/plans", "docs/plans")}
+PHASE_FILES = {3: "spec", 4: "plan", 6: "plan", 7: "plan"}
+
+
+def search_roots(cwd):
+    """This checkout, plus the main checkout when cwd is a linked worktree: gitignored specs and
+    plans exist only in the main checkout (the docs say to pass them by absolute path)."""
+    roots = [Path(repo_root(cwd) or cwd)]
+    common = Path(repo_identity(cwd)[0])
+    if common.name == ".git" and common.parent not in roots:
+        roots.append(common.parent)
+    return roots
+
+
+def doc_files(kind, cwd, dirs=None, since=0):
+    """[(mtime, path)] of spec or plan .md files changed after `since` ('/wf dirs' overrides the folders)."""
+    folders = ((dirs or {}).get(kind),) if (dirs or {}).get(kind) else DEFAULT_DIRS[kind]
+    out = []
+    for root in search_roots(cwd):
+        for d in folders:
+            for p in (root / d).glob("*.md"):
+                try:
+                    if p.is_file() and p.stat().st_mtime > since:
+                        out.append((p.stat().st_mtime, p))
+                except OSError:
+                    pass
+    return sorted(out)
 
 
 NEGATIVE = re.compile(r"^\W*(missing|todo|tbd|not (yet )?(done|covered|written|checked|included)|"
@@ -518,16 +550,16 @@ def score(n, message, file_text=None, items=None):
 
 
 def phase_file(n, cwd, state=None):
-    """Text of the newest spec (P3) or plan (P4, P6) file changed since this feature started, or None."""
-    since = (state or {}).get("feature_start") or 0
-    root = Path(repo_root(cwd) or cwd)
+    """Text of the newest spec (P3) or plan (P4, P6, P7) file changed since this feature started, or None."""
+    kind = PHASE_FILES.get(n)
+    if not kind:
+        return None
+    state = state or {}
+    files = doc_files(kind, cwd, state.get("dirs"), state.get("feature_start") or 0)
+    if not files:
+        return None
     try:
-        files = [(p.stat().st_mtime, p) for d in PHASE_FILES.get(n, ()) for p in (root / d).glob("*.md")
-                 if p.is_file()]
-        files = [(m, p) for m, p in files if m > since]
-        if not files:
-            return None
-        with open(max(files)[1], errors="ignore") as f:
+        with open(files[-1][1], errors="ignore") as f:
             return f.read(500_000)
     except OSError:
         return None
@@ -822,21 +854,20 @@ def on_expansion(payload, env, store, cwd):
     return on_skill(payload.get("command_name"), "UserPromptExpansion", env, store, cwd)
 
 
-def guess_phase(cwd, since=0):
+def guess_phase(cwd, since=0, dirs=None):
     """Best guess of the phase from spec/plan files changed after `since` (a finished feature's
     files don't count): (phase, evidence) or (None, '')."""
-    root = Path(repo_root(cwd) or cwd)
-    def files(*dirs):
-        return [p for d in dirs for p in sorted((root / d).glob("*.md"))
-                if p.is_file() and p.stat().st_mtime > since]
-    plans, specs = files("docs/superpowers/plans", "docs/plans"), files("docs/superpowers/specs", "docs/specs")
-    for p in plans:
-        if "## Execution record" in p.read_text(errors="ignore"):
-            return 8, f"plan {p.relative_to(root)} has an Execution record"
+    plans, specs = doc_files("plan", cwd, dirs, since), doc_files("spec", cwd, dirs, since)
+    for _, p in plans:
+        try:
+            if re.search(FILE_PATTERNS["execution record"], p.read_text(errors="ignore"), re.I | re.M):
+                return 8, f"plan {p} has an Execution record"
+        except OSError:
+            pass
     if plans:
-        return 5, f"plan {plans[-1].relative_to(root)} exists"
+        return 5, f"plan {plans[-1][1]} exists"
     if specs:
-        return 4, f"spec {specs[-1].relative_to(root)} exists"
+        return 4, f"spec {specs[-1][1]} exists"
     return None, ""
 
 

@@ -121,6 +121,7 @@ off until you turn it on, a level you choose, a status line that shows where you
 | `/wf lite` · `/wf standard` · `/wf strict` | Change level (switches on if off) |
 | `/wf default strict` | Default level for new projects on this machine |
 | `/wf status` · `/wf 5` · `/wf new` | Where am I · jump to a phase (loop-backs) · start a new feature |
+| `/wf dirs <spec> <plan>` | Your own spec/plan folders, if they aren't `docs/superpowers/specs|plans` or `docs/specs|plans` (inside a worktree the main checkout is searched too) |
 | `/wf statusline` | Prints the one line to add to `~/.claude/settings.json` to see `[WF P4 · standard]` |
 
 **Levels**

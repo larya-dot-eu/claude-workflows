@@ -1162,3 +1162,39 @@ class TestChecklistFromDoc(unittest.TestCase):
         self.assertEqual(r["unverified"], [])
         r = wf.score(3, checklist(3), FULL_SPEC.replace("Checkpoint: no conflicts with existing code, no unverified assumptions.", ""))
         self.assertEqual(r["unverified"], [])
+
+
+class TestFilesFromWorktreeAndCustomDirs(unittest.TestCase):
+    def setUp(self):
+        self.e = Env(branch="main")
+        (self.e.repo / ".gitignore").write_text("docs/\n")
+        git(self.e.repo, "add", ".gitignore")
+        git(self.e.repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "ignore docs")
+        self.e.prompt("/wf on")
+
+    def tearDown(self):
+        self.e.close()
+
+    def test_worktree_finds_gitignored_spec_and_plan_in_main_checkout(self):
+        d = self.e.repo / "docs/superpowers/plans"
+        d.mkdir(parents=True)
+        (d / "2026-11-01-x.md").write_text(SP_PLAN)
+        wt = Path(self.e.tmp.name) / "wt"
+        git(self.e.repo, "worktree", "add", "-q", "-b", "feat", str(wt))
+        wf.repo_identity.cache_clear()
+        self.assertIn("Ownership map", wf.phase_file(4, str(wt), {}) or "")
+        self.assertEqual(wf.guess_phase(str(wt))[0], 5)
+
+    def test_dirs_keep_their_case(self):
+        self.assertEqual(wf.parse_command("/wf dirs Design/Specs Design/Plans"),
+                         ("dirs", ["Design/Specs", "Design/Plans"]))
+
+    def test_custom_dirs(self):
+        out = self.e.prompt("/wf dirs design/specs design/plans")
+        self.assertIn("design/specs", shown(out) + ctx(out))
+        d = self.e.repo / "design/plans"
+        d.mkdir(parents=True)
+        (d / "p.md").write_text(SP_PLAN)
+        wf.repo_identity.cache_clear()
+        self.assertIn("Ownership map", wf.phase_file(4, str(self.e.repo), self.e.state()) or "")
+        self.assertEqual(wf.guess_phase(str(self.e.repo), 0, self.e.state().get("dirs"))[0], 5)
