@@ -1222,3 +1222,9 @@ class TestCombinedFirstMessage(EngineCase):
         out = self.skill("superpowers:brainstorming")
         self.assertIn("[[gate P1]]", ctx(out))
         self.assertIn("Phase 0", ctx(out))
+
+
+class TestSkillFile(unittest.TestCase):
+    def test_wf_skill_is_user_only(self):
+        front = (ROOT / "skills/wf/SKILL.md").read_text().split("---")[1]
+        self.assertIn("disable-model-invocation: true", front)
