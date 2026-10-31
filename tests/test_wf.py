@@ -1,6 +1,7 @@
 """Tests for scripts/wf.py — run with: python3 -m unittest discover -s tests"""
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -949,3 +950,19 @@ class TestCheapWhenOff(unittest.TestCase):
     def test_wf_command_still_works_from_nothing(self):
         self.e.prompt("/wf on")
         self.assertEqual(self.e.state()["enabled"], "on")
+
+
+class TestStatuslineSnippetQuoting(unittest.TestCase):
+    def test_snippet_command_runs_with_space_in_path(self):
+        e = Env()
+        try:
+            e.env["CLAUDE_PLUGIN_DATA"] = str(Path(e.tmp.name) / "my data")
+            e.prompt("/wf on")
+            text = ctx(e.prompt("/wf statusline"))
+            snippet = json.loads("{" + re.search(r'("statusLine": \{.*?\})', text).group(1) + "}")
+            cmd = snippet["statusLine"]["command"]
+            p = subprocess.run(cmd, shell=True, input=json.dumps({"workspace": {"current_dir": str(e.repo)}}),
+                               capture_output=True, text=True)
+            self.assertEqual((p.returncode, p.stdout), (0, "[WF P– · standard]"), p.stderr)
+        finally:
+            e.close()

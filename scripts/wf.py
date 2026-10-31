@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -264,10 +265,11 @@ def phase_context(n, env, cwd, budget=LIMIT):
 
 def statusline_snippet(env):
     script = data_dir(env) / "statusline.py"
+    cmd = "python3 %s statusline" % shlex.quote(str(script))   # quoted: paths may contain spaces
     return ('Add this to ~/.claude/settings.json (it shows `[WF P4 · standard]` while the skin is on):\n'
-            '```json\n"statusLine": {"type": "command", "command": "python3 %s statusline"}\n```\n'
+            '```json\n"statusLine": {"type": "command", "command": %s}\n```\n'
             'If you already have a status line (e.g. ponytail), keep it and append the wf output: '
-            '`<your command>; python3 %s statusline`.' % (script, script))
+            '`<your command>; %s`.' % (json.dumps(cmd, ensure_ascii=False), cmd))
 
 
 # ---------------------------------------------------------------- /wf commands
