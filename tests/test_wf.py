@@ -1108,3 +1108,57 @@ class TestGuardSequences(unittest.TestCase):
                         ("git checkout main && git log", "feat"),
                         ("git checkout main && git checkout -b fix && git merge feat", "feat")]:
             self.assertFalse(wf.guard_reason(cmd, br), (cmd, br))
+
+
+# ================================================================ C4/C5: checklists come from the doc
+
+SP_PLAN = """# Subtract Implementation Plan
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development
+**Goal:** add subtract
+## Global Constraints
+- access-control matrix: none
+## Ownership map
+- subtract lives in calc.py
+---
+### Task 1: subtract
+- [ ] **Step 1: Write the failing test** `[Sad]`
+- [ ] **Step 2: Run test to verify it fails**
+Run: `pytest tests/test_calc.py -v`
+Expected: FAIL
+"""
+
+
+class TestChecklistFromDoc(unittest.TestCase):
+    def test_labels_are_read_from_the_doc(self):
+        doc = (ROOT / "Claude-Workflows-Best-Practices.md").read_text()
+        for n in range(0, 11):
+            items = wf.checks_from_doc(doc, n)
+            self.assertEqual([l for l, _ in items], [l for l, _ in wf.CHECKS[n]], n)
+            self.assertGreaterEqual(len(items), 3, n)
+
+    def test_every_file_item_has_a_pattern(self):
+        for n, items in wf.CHECKS.items():
+            for label, is_file in items:
+                if is_file:
+                    self.assertIn(label, wf.FILE_PATTERNS, (n, label))
+
+    def test_project_doc_labels_win(self):
+        e = Env()
+        try:
+            (e.repo / "Claude-Workflows-Best-Practices.md").write_text(
+                "## Phase 4 — Plan\nrules\n\n**Gate checklist:** team sign-off · risk log\n\n---\n")
+            e.prompt("/wf on")
+            text = ctx(e.prompt("/wf 4"))
+            self.assertIn("team sign-off; risk log", text)
+        finally:
+            e.close()
+
+    def test_superpowers_plan_format_only_flags_real_file_gaps(self):
+        r = wf.score(4, checklist(4), SP_PLAN)
+        self.assertEqual(r["unverified"], ["exit state per step"])   # the doc requires it; writing-plans doesn't add it
+
+    def test_chat_items_are_never_checked_against_files(self):
+        r = wf.score(6, checklist(6), SP_PLAN)
+        self.assertEqual(r["unverified"], [])
+        r = wf.score(3, checklist(3), FULL_SPEC.replace("Checkpoint: no conflicts with existing code, no unverified assumptions.", ""))
+        self.assertEqual(r["unverified"], [])

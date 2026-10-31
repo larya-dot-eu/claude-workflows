@@ -309,7 +309,7 @@ def phase_lines(doc_text, n):
 def phase_context(n, env, cwd, budget=LIMIT):
     doc = read_doc(DOC, env, cwd)
     lead = f"Current phase: {n} ({PHASE_NAMES.get(n, '?')}). "
-    rule = "\n\n" + checklist_instruction(n)
+    rule = "\n\n" + checklist_instruction(n, checks_from_doc(doc, n) or CHECKS.get(n, []))
     if not doc:
         return (lead + f"Its full rules are unavailable (rules file not found: `{DOC}` is neither in this project "
                 "nor in the plugin); work from the checklist below and tell the user once." + rule)
@@ -416,48 +416,64 @@ def run_command(cmd, args, state, store, env, cwd):
 # present (or explicitly N/A) in Claude's gate message or the phase's spec/plan file — it measures
 # coverage, not quality. Reading the gate stays the user's job.
 
-CHECKS = {
-    0: [("tier named", r"\b(full|quick)\b[^.\n]{0,40}\btier|\btier\b[^.\n]{0,40}\b(full|quick)\b"),
-        ("CLAUDE.md loaded", r"claude\.md"),
-        ("ROADMAP.md checked", r"roadmap"),
-        ("touched code located", r"\b(file|module|code)s?\b")],
-    1: [("architecture", r"architect"), ("constraints", r"constraint"),
-        ("conventions", r"convention|pattern"), ("prior decisions", r"decision|decided")],
-    2: [("exact problem", r"problem"), ("constraints", r"constraint"),
-        ("what's different", r"differ|deviat"),
-        ("prior-solution search", r"prior solution|existing (code|implementation|function|component)|"
-                                  r"reuse candidate|already (exists|in the codebase)|none found")],
-    3: [("behavior", r"behaviou?r"), ("interfaces", r"interface|input|output|\bapi\b"),
-        ("edge cases", r"edge case|error state"), ("transactional integrity", r"transaction|atomic|eventual"),
-        ("assumptions", r"assumption"), ("access-control matrix", r"access[- \n]control|access boundar|authori[sz]ation|permission"),
-        ("expected scale", r"\bscale\b|req(uests)?/s|\brows\b"), ("reuse", r"\breuse|net-new"),
-        ("presentation vs logic", r"presentation|hardcod|\bconfig\b"),
-        ("codebase checkpoint", r"conflict|unverified")],
-    4: [("global constraints", r"global constraints"), ("ownership map", r"ownership map"),
-        ("exit state per step", r"exit state"), ("verification per step", r"verif"),
-        ("checkpoint Q1–Q3", r"independently testable|built in at each step|extract"),
-        ("checkpoint Q4 external deps", r"external dependenc"), ("checkpoint Q5 likely wrong", r"most likely wrong")],
-    5: [("intermediate states", r"intermediate state"), ("dependency graph", r"dependency graph"),
-        ("command dry-run", r"dry[- ]run"), ("design-shape pass", r"design[- ]shape"),
-        ("abuse-case pass", r"abuse|idor|authz|row[- ]level"), ("scale pass", r"scale pass|peak|×10|x10"),
-        ("reinvention/hardcode pass", r"reinvent|hardcod")],
-    6: [("isolated workspace", r"worktree|feature branch"), ("test matrix in tasks", r"\[(happy|sad|edge)\]|zombies"),
-        ("RED confirmed", r"\bred\b|fails? on (the )?assert"), ("execution method", r"subagent-driven|\bnative\b|execution method")],
-    7: [("tests green", r"\d+ (passed|tests? pass)|all tests? (pass|green)|suite (is )?green"),
-        ("execution record", r"execution record"), ("no unplanned changes", r"unplanned|scope")],
-    8: [("plan vs reality", r"diverg"), ("CLAUDE.md updates", r"claude\.md"),
-        ("duplication / inlined config", r"duplicat|inlin"), ("ROADMAP.md", r"roadmap")],
-    9: [("work plan updated", r"work plan|plan (doc|file)"), ("CLAUDE.md updated", r"claude\.md"),
-        ("ROADMAP.md", r"roadmap")],
-    10: [("artifact boots locally", r"boot|/health|health ?check"), ("auth 401/403", r"\b40[13]\b"),
-         ("session cookies", r"set-cookie|httponly"), ("IDOR replay", r"idor|another user|user b\b"),
-         ("indexes (EXPLAIN)", r"\bexplain\b"), ("monitoring + alerting", r"alert|monitor"),
-         ("rollback target", r"rollback|roll back"), ("lands through a PR", r"pull request|\bpr\b")],
+# The labels live in the full doc: each phase ends with a line
+#   **Gate checklist:** item · item *(file)* · …
+# so the doc stays the single source of the rules (a project's own copy wins). Items marked (file)
+# must also appear in the spec/plan file; FILE_PATTERNS says how to find each of them there.
+
+GATE_LINE = re.compile(r"^\*\*Gate checklist:\*\*\s*(.+)$", re.M)
+
+FILE_PATTERNS = {
+    "behavior": r"behaviou?r",
+    "interfaces": r"interface|input|output|\bapi\b|signature",
+    "edge cases": r"edge case|error state|error case",
+    "transactional integrity": r"transaction|atomic|eventual",
+    "assumptions": r"assumption",
+    "access-control matrix": r"access[- \n]control|access boundar|authori[sz]ation|permission",
+    "expected scale": r"\bscale\b|req(uests)?/s|\brows\b",
+    "reuse": r"\breuse|net-new",
+    "presentation vs logic": r"presentation|hardcod|\bconfig\b",
+    "global constraints": r"global constraints",
+    "ownership map": r"ownership map",
+    "exit state per step": r"exit state",
+    "verification per step": r"verif|^\s*Expected:",
+    "test matrix in tasks": r"\[(happy|sad|edge)\]|zombies",
+    "execution record": r"^#+\s*Execution record",
 }
+
+
+def checks_from_doc(doc_text, n):
+    """[(label, checked_in_file)] from phase n's 'Gate checklist' line in the doc ([] if it has none)."""
+    m = GATE_LINE.search(phase_section(doc_text or "", n))
+    if not m:
+        return []
+    items = []
+    for raw in m.group(1).split(" · "):
+        is_file = "(file)" in raw
+        label = re.sub(r"\s*\*?\(file\)\*?\s*$", "", raw).strip()
+        if label:
+            items.append((label, is_file))
+    return items
+
+
+def _bundled_checks():
+    try:
+        doc = (Path(__file__).resolve().parent.parent / DOC).read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    return {n: checks_from_doc(doc, n) for n in range(0, 11)}
+
+
+CHECKS = _bundled_checks()   # the plugin's own doc; used when a project's doc has no checklist lines
+
+
+def items_for(n, env, cwd):
+    return checks_from_doc(read_doc(DOC, env, cwd), n) or CHECKS.get(n, [])
+
 
 # Phases whose gate claims are cross-checked against a file (the others are judged from the message).
 PHASE_FILES = {3: ("docs/superpowers/specs", "docs/specs"),
-               4: ("docs/superpowers/plans", "docs/plans"), 6: ("docs/superpowers/plans", "docs/plans")}
+               **{n: ("docs/superpowers/plans", "docs/plans") for n in (4, 6, 7)}}
 
 
 NEGATIVE = re.compile(r"^\W*(missing|todo|tbd|not (yet )?(done|covered|written|checked|included)|"
@@ -478,24 +494,26 @@ def checklist_lines(message):
     return out
 
 
-def score(n, message, file_text=None):
+def score(n, message, file_text=None, items=None):
     """Score phase n's gate. An item counts only when Claude's gate message has a line
     '- <label>: <where it is covered>' or '- <label>: N/A — why'. Negative answers (missing, TBD,
     left out, …) don't count, and where a spec/plan file exists, a covered item whose topic isn't
     in that file is 'unverified' and doesn't count either."""
+    items = CHECKS.get(n, []) if items is None else items
     lines = checklist_lines(message)
     found, missing, unverified, listed = 0, [], [], 0
-    for label, rx in CHECKS.get(n, []):
+    for label, is_file in items:
         value = lines.get(label.lower())
         if value is not None:
             listed += 1
+        rx = FILE_PATTERNS.get(label) if is_file else None
         if not value or NEGATIVE.match(value):
             missing.append(label)
-        elif file_text is not None and not NA.match(value) and not re.search(rx, file_text, re.I):
+        elif rx and file_text is not None and not NA.match(value) and not re.search(rx, file_text, re.I | re.M):
             unverified.append(label)
         else:
             found += 1
-    return {"found": found, "total": len(CHECKS.get(n, [])), "missing": missing,
+    return {"found": found, "total": len(items), "missing": missing,
             "unverified": unverified, "listed": listed}
 
 
@@ -515,8 +533,8 @@ def phase_file(n, cwd, state=None):
         return None
 
 
-def checklist_instruction(n):
-    labels = [l for l, _ in CHECKS.get(n, [])]
+def checklist_instruction(n, items=None):
+    labels = [l for l, _ in (CHECKS.get(n, []) if items is None else items)]
     if not labels:
         return ""
     return (f"At the Phase {n} gate, just before `[[gate P{n}]]`, list one line per checklist item, using these "
@@ -662,7 +680,8 @@ def on_stop(payload, env, store, cwd):
         store.save(cwd, state)
     if gate is None:
         return None
-    r = score(gate, payload.get("last_assistant_message"), phase_file(gate, cwd, state))
+    items = items_for(gate, env, cwd)
+    r = score(gate, payload.get("last_assistant_message"), phase_file(gate, cwd, state), items)
     tl = state.setdefault("timeline", {})
     prev = tl.get(str(gate), {})
     if not r["listed"] and prev.get("listed"):
@@ -678,7 +697,7 @@ def on_stop(payload, env, store, cwd):
         out["decision"] = "block"
         out["reason"] = (f"Workflow checklist for the Phase {gate} gate is incomplete. Missing: "
                          f"{', '.join(missing)}. Do each one (or decide it is N/A, with the reason), then end "
-                         f"with the checklist lines and `[[gate P{gate}]]` again. {checklist_instruction(gate)} "
+                         f"with the checklist lines and `[[gate P{gate}]]` again. {checklist_instruction(gate, items)} "
                          "(This reminder comes once per gate.)")
     store.save(cwd, state)
     return out

@@ -45,6 +45,9 @@ After loading, summarize to the user:
 
 Do not proceed to Phase 1 until the user confirms your summary is correct or provides corrections.
 
+**Gate checklist:** tier named · CLAUDE.md loaded · ROADMAP.md checked · touched code located
+*(At the gate: one line per item — `- <item>: <where it is covered>` or `- <item>: N/A — <why>` — then `[[gate P<n>]]`. Items marked (file) must also be in the spec/plan file.)*
+
 ---
 
 ## Phase 1 — Context Priming
@@ -61,6 +64,9 @@ State explicitly:
 Do not proceed to Phase 2 until the user confirms.
 
 **Superpowers:** `brainstorming` reads the project before its first message and plays the request back. That first message **is** the Prerequisites + Phase 1 summary — don't produce a second one. It must name the `CLAUDE.md` constraints and prior decisions that apply, and the user's confirmation or correction of it clears this gate.
+
+**Gate checklist:** architecture · constraints · conventions · prior decisions
+*(At the gate: one line per item — `- <item>: <where it is covered>` or `- <item>: N/A — <why>` — then `[[gate P<n>]]`. Items marked (file) must also be in the spec/plan file.)*
 
 ---
 
@@ -89,6 +95,9 @@ While exploring, surface:
 If you cannot answer all three clearly — stay in Phase 2 and ask the user for the missing clarity.
 
 **Superpowers:** brainstorming's questions and playback chunks are this phase. It may offer proposals the user can correct — allowed only as marked guesses about *what* they want, never *how* to build it. Brainstorming moves on to *Lay out the approaches* once it feels it understands; **before** that message, state the three exit answers above plus the prior-solution search result. The approaches message is the first act of Phase 3.
+
+**Gate checklist:** exact problem · constraints · what's different · prior-solution search
+*(At the gate: one line per item — `- <item>: <where it is covered>` or `- <item>: N/A — <why>` — then `[[gate P<n>]]`. Items marked (file) must also be in the spec/plan file.)*
 
 ---
 
@@ -161,6 +170,9 @@ One required output, one optional companion — saved to your spec directory, e.
 
 > Ask the user how they want to view the HTML. If they have local browser access, just open the file. If the project runs on a remote/headless host, serve it: run `python3 -m http.server 8090` from the project root and open `http://<host>:8090/<spec-path>/spec-[feature-name].html` from a machine that can reach it (LAN, SSH tunnel, or a mesh VPN like Tailscale). Kill with Ctrl+C when done.
 
+**Gate checklist:** behavior *(file)* · interfaces *(file)* · edge cases *(file)* · transactional integrity *(file)* · assumptions *(file)* · access-control matrix *(file)* · expected scale *(file)* · reuse *(file)* · presentation vs logic *(file)* · codebase checkpoint
+*(At the gate: one line per item — `- <item>: <where it is covered>` or `- <item>: N/A — <why>` — then `[[gate P<n>]]`. Items marked (file) must also be in the spec/plan file.)*
+
 ---
 
 ## Phase 4 — Plan Writing
@@ -211,6 +223,9 @@ One required output, one optional companion — saved to your plans directory, e
 - Checkpoint questions rendered as a visible checklist the user ticks off before approving
 - External dependencies called out in a highlighted warning box
 
+**Gate checklist:** global constraints *(file)* · ownership map *(file)* · exit state per step *(file)* · verification per step *(file)* · checkpoint Q1–Q3 · checkpoint Q4 external deps · checkpoint Q5 likely wrong
+*(At the gate: one line per item — `- <item>: <where it is covered>` or `- <item>: N/A — <why>` — then `[[gate P<n>]]`. Items marked (file) must also be in the spec/plan file.)*
+
 ---
 
 ## Phase 5 — Adversarial Review
@@ -244,6 +259,9 @@ Check:
 **Rollback rule:** If more than one-third of all steps of the plan need reworking, do not patch. Restart from Phase 3.
 
 **Exit gate:** The plan is structurally sound. No broken intermediate states. Dependency order is correct. All assumptions are surfaced and verified. User has approved.
+
+**Gate checklist:** intermediate states · dependency graph · command dry-run · design-shape pass · abuse-case pass · scale pass · reinvention/hardcode pass
+*(At the gate: one line per item — `- <item>: <where it is covered>` or `- <item>: N/A — <why>` — then `[[gate P<n>]]`. Items marked (file) must also be in the spec/plan file.)*
 
 ---
 
@@ -298,6 +316,9 @@ Do not create a new TDD document, and do not append the output as a separate sec
 4. Execution method chosen (Superpowers: subagent-driven or native) — this is where `writing-plans`' handoff question gets answered.
 5. The user approves the Phase 6 gate (e.g. "approved" or "start Phase 7") — approving the Phase 6 gate is the go to execute. Approving the plan (Phase 4) or an intermediate test-design message is not: if an execution method was preset, `writing-plans` treats "plan approved" as the signal to start.
 
+**Gate checklist:** isolated workspace · test matrix in tasks *(file)* · RED confirmed · execution method
+*(At the gate: one line per item — `- <item>: <where it is covered>` or `- <item>: N/A — <why>` — then `[[gate P<n>]]`. Items marked (file) must also be in the spec/plan file.)*
+
 ---
 
 ## Phase 7 — TDD Implementation
@@ -338,6 +359,9 @@ Everything else stays a ruling — that keeps the speed the executors are built 
 
 **Exit gate:** All plan steps implemented. All tests passing. No unplanned changes introduced. Execution record saved.
 
+**Gate checklist:** tests green · execution record *(file)* · no unplanned changes
+*(At the gate: one line per item — `- <item>: <where it is covered>` or `- <item>: N/A — <why>` — then `[[gate P<n>]]`. Items marked (file) must also be in the spec/plan file.)*
+
 ---
 
 ## Phase 8 — Post-Implementation Review
@@ -358,6 +382,9 @@ Report findings to the user. Flag any recommended doc updates.
 **Rollback signal:** If the implementation diverged significantly from the plan without documented reasoning, treat this as a signal that the spec or adversarial review was insufficient. Note this for the next planning session.
 
 **Exit gate:** Findings reported. Doc updates flagged or completed. User sign-off received. If significant divergence was found, trigger a Phase 9 update immediately before closing Phase 8 — do not defer to the next session.
+
+**Gate checklist:** plan vs reality · CLAUDE.md updates · duplication / inlined config · ROADMAP.md
+*(At the gate: one line per item — `- <item>: <where it is covered>` or `- <item>: N/A — <why>` — then `[[gate P<n>]]`. Items marked (file) must also be in the spec/plan file.)*
 
 ---
 
@@ -381,6 +408,8 @@ Say:
 
 Write the update so that a fresh session with no conversation history can resume work immediately from the document alone.
 
+**Gate checklist:** work plan updated · CLAUDE.md updated · ROADMAP.md
+*(At the gate: one line per item — `- <item>: <where it is covered>` or `- <item>: N/A — <why>` — then `[[gate P<n>]]`. Items marked (file) must also be in the spec/plan file.)*
 
 ---
 
@@ -425,6 +454,9 @@ Verification is not just testing. Implementation passing tests is NOT done. A de
 - **A rollback is only real if its target still exists — verify before you rely on it.** "We can just roll back" is an assumption, not a safety net: hosts prune or expire previous builds, so a deploy you called reversible may have nothing to return to. Confirm the rollback target exists before treating a deploy as low-risk. If it's gone, stop trying to resurrect it — recover by fixing the source and rebuilding forward, which is the real recovery vehicle anyway (a deployment rollback does not undo already-merged history).
 
 **Exit gate:** Artifact verified locally; security gate and operational-readiness gate passed with real evidence; deployed; health + routes confirmed live; rollback path known. Only then is the work "done."
+
+**Gate checklist:** artifact boots locally · auth 401/403 · session cookies · IDOR replay · indexes (EXPLAIN) · monitoring + alerting · rollback target · lands through a PR
+*(At the gate: one line per item — `- <item>: <where it is covered>` or `- <item>: N/A — <why>` — then `[[gate P<n>]]`. Items marked (file) must also be in the spec/plan file.)*
 
 ---
 
