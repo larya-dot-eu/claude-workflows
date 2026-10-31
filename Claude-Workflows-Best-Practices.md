@@ -3,6 +3,7 @@
 > **Invoke this skill at the start of any new feature, integration, or implementation session.**
 > **Approval is explicit.** A phase is not approved until the user writes a clear confirmation (e.g. "approved", "looks good", "proceed").
 > Work through every phase in order. Do not skip phases. Do not proceed past an exit gate until it is explicitly cleared.
+> **Gate marker:** end every message that reaches an exit gate with the line `[[gate P<n>]]` (n = the phase number). The `wf` plugin (`/wf on`) uses it to move to the next phase when the user approves.
 >
 > **This is the full reference.** For everyday use, keep [`Claude-Workflows-Best-Practices-Compact.md`](./Claude-Workflows-Best-Practices-Compact.md) loaded as the always-on spine and read the matching section here when you enter a phase or need a full checklist — that keeps token cost and drift down on long sessions.
 >

@@ -2,7 +2,7 @@
 
 Always-on spine. Full detail/rationale/output-formats: **`Claude-Workflows-Best-Practices.md`** — read matching section when enter phase or need full checklist. This file enough to hold discipline; full doc enough to execute. **Sync rule:** both files = one spec; any phase/gate/checklist change lands in both in same commit.
 
-**Prime rule:** Work phases in order. Phase clears only when *user* writes approval ("approved", "looks good", "proceed") — never self-clear gate. Generation phases produce; review phases (Phase 3/4 checkpoints, Phase 5, Phase 10 gates) exist to *break* work, not defend.
+**Prime rule:** Work phases in order. Phase clears only when *user* writes approval ("approved", "looks good", "proceed") — never self-clear gate. End every exit-gate message with the line `[[gate P<n>]]` (n = phase) — the `wf` plugin advances on it. Generation phases produce; review phases (Phase 3/4 checkpoints, Phase 5, Phase 10 gates) exist to *break* work, not defend.
 
 **Tier check (before anything):** Full pipeline = default for feature-shaped work. **Quick** (typo, config tweak, doc edit, obvious one-file fix — user confirms tier): skip P1–6 → branch first → state blast radius (open every touched file + grep callers) → change + test → real-run verify. P8–10 still apply if it ships; deploy gates never skipped. Brainstorming "just dive in", bug fix, spike ≠ tier — still confirm + branch. Quick change grows past named blast radius / raises design question / crosses data boundary → stop, restart full. Unsure → full.
 
