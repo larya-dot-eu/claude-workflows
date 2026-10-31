@@ -58,7 +58,7 @@ Where a Superpowers skill and this section disagree, this section wins.
   `minor (deferred)` and "no reachable spec" lines into the plan file under `## Execution record`.
   Phase 8 reviews every ruling as a divergence.
 - **finishing-a-development-branch:** do not invoke it until Phases 8 and 9 are approved. Then offer
-  only "Push and create a Pull Request" or "Keep the branch as-is" (by label). Never merge locally.
+  the push-and-PR option or the keep option (normal menu: "Push and create a Pull Request" / "Keep the branch as-is"; detached HEAD: "Push as new branch and create a Pull Request" / "Keep as-is") — never a merge option.
   Phase 10 runs before the PR is merged.
 ```
 
@@ -301,8 +301,7 @@ Each entry says **what breaks**, **where** (the skill text that causes it), **ho
   invoke it as their last step, so it runs before Phases 8–10. On a detached HEAD the menu is
   renumbered (1 = push + PR, 2 = keep), so "options 2/3 only" would ban the PR there.
 - **Where:** `finishing-a-development-branch/SKILL.md` → *Step 4*.
-- **How:** Hold it until Phases 8 and 9 are approved. Allowed options, **by label**: "Push and create a
-  Pull Request" or "Keep the branch as-is". Phase 10's deploy gates run against the PR's branch. Merge is
+- **How:** Hold it until Phases 8 and 9 are approved. Allowed: the push-and-PR option or the keep option (normal menu: "Push and create a Pull Request" / "Keep the branch as-is"; detached HEAD: "Push as new branch and create a Pull Request" / "Keep as-is") — never a merge option. Phase 10's deploy gates run against the PR's branch. Merge is
   the last step.
 - **When:** End of Phase 7 → Phase 10.
 
@@ -314,8 +313,9 @@ Each entry says **what breaks**, **where** (the skill text that causes it), **ho
   now where isolation happens — so a Quick change had no isolation step at all.
 - **Where:** `using-superpowers/SKILL.md` → *Skill Priority*; `brainstorming/SKILL.md` → *Spike to feel
   things out*, `<HARD-GATE>`.
-- **How:** Bug fix → `systematic-debugging` finds the root cause, then the tier check (most land in
-  Quick), then a branch. Spike → a throwaway branch, never merged; keeping it is a new Full-tier request.
+- **How:** Bug fix → tier check, then a branch, **before** `systematic-debugging` adds any
+  instrumentation or test. Stop between its root-cause phase and its fix phase to re-check the tier: a
+  root cause outside the stated blast radius escalates to Full. Spike → a throwaway branch, never merged; keeping it is a new Full-tier request.
   Quick tier → branch first, then blast radius.
 - **When:** Any request that doesn't start with brainstorming.
 
