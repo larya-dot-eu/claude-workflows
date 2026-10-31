@@ -314,7 +314,7 @@ class EngineCase(unittest.TestCase):
 class TestPhaseEngine(EngineCase):
     def test_gate_then_approval_advances_one_phase(self):
         self.e.prompt("/wf 3")
-        self.assertIsNone(self.stop("Here is the spec.\n[[gate P3]]"))
+        self.assertNotIn("decision", self.stop("Here is the spec.\n[[gate P3]]") or {})
         self.assertEqual(self.e.state()["gate_pending"], 3)
         out = self.e.prompt("approved")
         s = self.e.state()
@@ -631,3 +631,45 @@ class TestReviewFixes(unittest.TestCase):
         subprocess.run(["git", "-C", str(self.e.repo), "checkout", "-q", "--detach"], check=True)
         self.assertNotEqual(wf.repo_identity(str(self.e.repo))[1], "HEAD")
         self.assertNotEqual(a, wf.repo_identity(str(self.e.repo)))
+
+
+# ================================================================ F1: visible lines
+
+def shown(out):
+    """The line the user sees in the terminal (systemMessage), or ''."""
+    return (out or {}).get("systemMessage", "")
+
+
+class TestVisibleLines(EngineCase):
+    def test_wf_commands_show_a_line(self):
+        self.assertIn("WF ▸", shown(self.e.prompt("/wf status")))
+        self.assertIn("pause", shown(self.e.prompt("/wf pause")).lower())
+        self.assertIn("on", shown(self.e.prompt("/wf resume")).lower())
+        self.assertIn("off", shown(self.e.prompt("/wf off")).lower())
+
+    def test_gate_reached_and_approved_are_shown(self):
+        self.e.prompt("/wf 3")
+        out = self.stop("spec\n[[gate P3]]")
+        self.assertIn("Gate P3", shown(out))
+        out = self.e.prompt("approved")
+        self.assertIn("Gate P3 approved → Phase 4", shown(out))
+
+    def test_skill_events_are_shown(self):
+        out = self.skill("superpowers:brainstorming")
+        self.assertIn("brainstorming", shown(out))
+        self.assertIn("Phase 0", shown(out))
+        out = self.skill("superpowers:writing-plans")
+        self.assertIn("⚠", shown(out))
+
+    def test_shown_text_is_not_sent_to_claude(self):
+        self.e.prompt("/wf 3")
+        out = self.stop("spec\n[[gate P3]]")
+        self.assertNotIn("hookSpecificOutput", out or {})
+
+    def test_turn_without_marker_shows_nothing(self):
+        self.assertIsNone(self.stop("just an answer"))
+
+    def test_nothing_shown_when_off(self):
+        self.e.prompt("/wf off")
+        self.assertIsNone(self.stop("x\n[[gate P3]]"))
+        self.assertIsNone(self.skill("superpowers:brainstorming"))

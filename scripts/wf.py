@@ -184,10 +184,14 @@ def _atomic_write(path, obj):
 
 # ---------------------------------------------------------------- output helpers
 
-def output(event, text):
-    if not text:
-        return None
-    return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}
+def output(event, text, show=None):
+    """Hook JSON: `text` goes to Claude (additionalContext), `show` is a line only the user sees."""
+    out = {}
+    if text:
+        out["hookSpecificOutput"] = {"hookEventName": event, "additionalContext": text}
+    if show:
+        out["systemMessage"] = "WF ▸ " + show
+    return out or None
 
 
 def describe(state):
@@ -196,6 +200,10 @@ def describe(state):
     ph = state["phase"]
     where = "no phase yet" if ph is None else f"Phase {ph} ({PHASE_NAMES.get(ph, '?')})"
     return f"{state['enabled']}, level {state['level']}, {where}"
+
+
+def show_status(state):
+    return describe(state).replace(", level ", " · ").replace(", ", " · ")
 
 
 def skin_context(state, env, cwd, with_phase=True, budget=LIMIT):
@@ -385,7 +393,9 @@ def on_stop(payload, env, store, cwd):
         if gate is not None:
             state["phase"] = gate
         store.save(cwd, state)
-    return None  # record only: never block
+    if gate is None:
+        return None
+    return output("Stop", None, f"Gate P{gate} reached · waiting for your approval")
 
 
 def approve(state, env, cwd):
@@ -468,9 +478,28 @@ def on_skill(name, event, env, store, cwd):
     state = store.load(cwd)
     if not engine_on(state):
         return None
+    before = state["phase"]
     text = fn(state, env, cwd)
     store.save(cwd, state)
-    return output(event, text)
+    short = (name or "").split(":")[-1]
+    after = state["phase"]
+    if after != before:
+        show = f"{short} started → Phase {after} ({PHASE_NAMES[after]})"
+    else:
+        warn = text and ("Stop" in text or "not approved" in text or "Hold" in text)
+        show = ("⚠ " if warn else "") + f"{short} — " + SKILL_SHOW[short][0 if warn else 1]
+    return output(event, text, show)
+
+
+# what the user sees when a skill doesn't change the phase: (warning, reminder)
+SKILL_SHOW = {
+    "brainstorming": ("", "already in this feature's Phases 0–3"),
+    "writing-plans": ("spec (Phase 3) is not approved yet", "execution-method question waits until Phase 6"),
+    "subagent-driven-development": ("Phases 5–6 are not done yet", "extra stop conditions + Execution record on"),
+    "executing-plans": ("Phases 5–6 are not done yet", "extra stop conditions + Execution record on"),
+    "finishing-a-development-branch": ("hold until Phases 8–9 are approved", "only push + PR or keep; no merge"),
+    "systematic-debugging": ("", "tier check + branch before any debugging edits"),
+}
 
 
 def on_pre_tool(payload, env, store, cwd):
@@ -614,16 +643,21 @@ def on_prompt(payload, env, store, cwd):
         if new is not None:
             store.save(cwd, new)
         install_statusline(env)
-        return output("UserPromptSubmit", text)
+        return output("UserPromptSubmit", text, show_status(new or store.load(cwd)))
     if engine_on(state) and is_approval(payload.get("prompt")):
         if state.get("gate_pending") is None:
             return output("UserPromptSubmit",
                           "wf: no gate is pending, so this did not move the phase. If the user is approving a "
                           "gate, restate which gate in one line and end your message with its `[[gate P<n>]]` "
-                          "line, so their next approval moves the phase.")
+                          "line, so their next approval moves the phase.",
+                          "no gate pending — phase unchanged")
+        gate = state["gate_pending"]
         text = approve(state, env, cwd)
         store.save(cwd, state)
-        return output("UserPromptSubmit", text)
+        nxt = state["phase"]
+        show = (f"Gate P{gate} approved → feature complete" if nxt is None
+                else f"Gate P{gate} approved → Phase {nxt} ({PHASE_NAMES[nxt]})")
+        return output("UserPromptSubmit", text, show)
     return None
 
 
