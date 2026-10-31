@@ -966,3 +966,49 @@ class TestStatuslineSnippetQuoting(unittest.TestCase):
             self.assertEqual((p.returncode, p.stdout), (0, "[WF P– · standard]"), p.stderr)
         finally:
             e.close()
+
+
+# ================================================================ review S4/S6
+
+class TestMissingDocs(unittest.TestCase):
+    def test_no_doc_anywhere_says_rules_file_not_found(self):
+        e = Env()
+        try:
+            empty = Path(e.tmp.name) / "empty-plugin"
+            empty.mkdir()
+            e.env["CLAUDE_PLUGIN_ROOT"] = str(empty)
+            e.prompt("/wf on")
+            text = ctx(e.prompt("/wf 4"))
+            self.assertNotIn("None", text)
+            self.assertIn("rules file not found", text)
+            self.assertIn("ownership map", text)          # the checklist still arrives
+            self.assertIn("rules file not found", ctx(e.prompt("/wf lite")))
+        finally:
+            e.close()
+
+
+class TestEarlierGateIsARecap(EngineCase):
+    def test_earlier_gate_does_not_erase_timeline_or_move_back(self):
+        self.e.prompt("/wf new")
+        for n in range(0, 6):
+            self.stop(f"x\n[[gate P{n}]]")
+            self.e.prompt("approved")
+        before = dict(self.e.state()["timeline"])
+        out = self.stop("Recap of the plan.\n[[gate P4]]")
+        s = self.e.state()
+        self.assertEqual(s["phase"], 6)
+        self.assertEqual(s["timeline"], before)
+        self.assertIsNone(s["gate_pending"])
+        self.assertIn("/wf 4", shown(out))
+
+    def test_skin_tells_claude_loop_backs_are_the_users_call(self):
+        self.assertIn("`/wf <n>`", ctx(self.e.prompt("/wf 5")))
+
+    def test_loop_back_still_works_with_wf_n(self):
+        self.e.prompt("/wf new")
+        for n in range(0, 6):
+            self.stop(f"x\n[[gate P{n}]]")
+            self.e.prompt("approved")
+        self.e.prompt("/wf 3")
+        self.assertEqual(self.e.state()["phase"], 3)
+        self.assertEqual(wf.timeline_marks(self.e.state()), "✓✓✓")

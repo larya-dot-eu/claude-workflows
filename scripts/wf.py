@@ -224,12 +224,18 @@ def skin_context(state, env, cwd, with_phase=True, budget=LIMIT):
     """What Claude needs while the skin is on: spine (or lite rules) + current phase section,
     kept under `budget` characters (a phase that doesn't fit is given as an exact line range to read)."""
     spine = read_doc(SPINE, env, cwd)
+    if not spine:
+        spine = (f"(Workflow rules file not found: `{SPINE}` is neither in this project nor in the plugin. "
+                 "Tell the user once; the plugin may need reinstalling.)")
     if state["level"] == "lite":
-        return "Claude-Workflows skin (lite): apply these rules in every step.\n\n" + every_phase_rules(spine)
+        rules = every_phase_rules(spine) or spine
+        return "Claude-Workflows skin (lite): apply these rules in every step.\n\n" + rules
     parts = ["Claude-Workflows skin is on (level %s). This project follows the phased workflow below; "
              "the user clears every exit gate. When you reach a phase's exit gate, end your message with "
              "the line `[[gate P<n>]]` (n = the phase number) and wait for the user. If you answer a question "
-             "while still waiting at that gate, end that message with the same line again." % state["level"],
+             "while still waiting at that gate, end that message with the same line again. Going back to an earlier "
+             "phase (e.g. the Phase 5 loop-back table) is the user's call: recommend it and ask them to type "
+             "`/wf <n>`." % state["level"],
              spine]
     if state["level"] == "strict":
         parts.append("Strict level: run Phase 5 as one fresh-context subagent on the most capable model; "
@@ -254,6 +260,9 @@ def phase_context(n, env, cwd, budget=LIMIT):
     doc = read_doc(DOC, env, cwd)
     lead = f"Current phase: {n} ({PHASE_NAMES.get(n, '?')}). "
     rule = "\n\n" + checklist_instruction(n)
+    if not doc:
+        return (lead + f"Its full rules are unavailable (rules file not found: `{DOC}` is neither in this project "
+                "nor in the plugin); work from the checklist below and tell the user once." + rule)
     text = lead + "Full rules for this phase:\n\n" + phase_section(doc, n) + rule
     if len(text) <= budget:
         return text
@@ -587,6 +596,13 @@ def on_stop(payload, env, store, cwd):
     if not engine_on(state):
         return None
     gate = gate_from_message(payload.get("last_assistant_message"))
+    if gate is not None and state["phase"] is not None and gate < state["phase"]:
+        # An earlier phase's marker is a recap, not a loop-back: going back is the user's call (/wf N).
+        if state.get("gate_pending") is not None:
+            state["gate_pending"] = None
+            store.save(cwd, state)
+        return output("Stop", None, f"Gate P{gate} marker at Phase {state['phase']} ignored (treated as a recap) "
+                                    f"— to go back to Phase {gate}, type `/wf {gate}`")
     if gate != state.get("gate_pending") or (gate is not None and state["phase"] != gate):
         if gate is not None and state["phase"] != gate:
             move_to(state, gate)
