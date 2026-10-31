@@ -1198,3 +1198,27 @@ class TestFilesFromWorktreeAndCustomDirs(unittest.TestCase):
         wf.repo_identity.cache_clear()
         self.assertIn("Ownership map", wf.phase_file(4, str(self.e.repo), self.e.state()) or "")
         self.assertEqual(wf.guess_phase(str(self.e.repo), 0, self.e.state().get("dirs"))[0], 5)
+
+
+class TestCombinedFirstMessage(EngineCase):
+    def first_message(self, with_p0=True):
+        p0 = checklist(0).rsplit("\n\n", 1)[0] if with_p0 else ""
+        p1 = checklist(1).rsplit("\n\n", 1)[0]
+        return "Here is what I understand...\n" + p0 + "\n" + p1 + "\n\n[[gate P1]]"
+
+    def test_p0_lines_in_p1_gate_count_for_p0(self):
+        self.skill("superpowers:brainstorming")
+        self.stop(self.first_message())
+        self.e.prompt("approved")
+        self.assertEqual(wf.timeline_marks(self.e.state()), "✓✓")
+
+    def test_without_p0_lines_p0_is_skipped(self):
+        self.skill("superpowers:brainstorming")
+        self.stop(self.first_message(with_p0=False))
+        self.e.prompt("approved")
+        self.assertEqual(wf.timeline_marks(self.e.state()), "⚠✓")
+
+    def test_brainstorming_note_allows_one_combined_gate(self):
+        out = self.skill("superpowers:brainstorming")
+        self.assertIn("[[gate P1]]", ctx(out))
+        self.assertIn("Phase 0", ctx(out))

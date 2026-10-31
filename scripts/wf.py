@@ -637,7 +637,7 @@ def move_to(state, n):
         if n > old:
             for k in range(old, n):
                 entry = tl.get(str(k), {})
-                if entry.get("status") != "done":
+                if entry.get("status") not in ("done", "combined"):
                     tl[str(k)] = dict(entry, status="skipped")
         elif n < old:
             for k in [k for k in tl if int(k) >= n]:
@@ -675,6 +675,8 @@ def timeline_text(state):
             parts.append(f"P{k} ✓" + (f" {pct}%" if pct is not None and pct < 100 else ""))
         elif e.get("status") == "skipped":
             parts.append(f"P{k} ⚠ skipped")
+        elif e.get("status") == "combined":
+            parts.append(f"P{k} … in the P{ph} gate")
     return " · ".join(parts)
 
 
@@ -707,7 +709,17 @@ def on_stop(payload, env, store, cwd):
                                     f"— to go back to Phase {gate}, type `/wf {gate}`")
     if gate != state.get("gate_pending") or (gate is not None and state["phase"] != gate):
         if gate is not None and state["phase"] != gate:
+            old = state["phase"]
             move_to(state, gate)
+            if old is not None and old < gate:
+                # One message may close earlier phases too (brainstorming's first message is the Phase 1
+                # summary and can carry the Phase 0 items): a fully covered earlier checklist rides on
+                # this gate's approval instead of counting as skipped.
+                tl = state["timeline"]
+                for k in range(old, gate):
+                    r = score(k, payload.get("last_assistant_message"), None, items_for(k, env, cwd))
+                    if r["listed"] and r["found"] == r["total"]:
+                        tl[str(k)] = dict(r, status="combined")
         state["gate_pending"] = gate
         store.save(cwd, state)
     if gate is None:
@@ -739,6 +751,9 @@ def approve(state, env, cwd):
     gate = state["gate_pending"]
     tl = state.setdefault("timeline", {})
     tl[str(gate)] = dict(tl.get(str(gate), {}), status="done")
+    for k, e in tl.items():
+        if e.get("status") == "combined" and int(k) < gate:
+            e["status"] = "done"
     if gate >= 10:
         state.update(phase=None, gate_pending=None, injected=None, completed_at=time.time(), timeline={})
         return ("The user approved the Phase 10 gate. The workflow is complete for this feature. "
@@ -755,10 +770,13 @@ def _skill_brainstorming(state, env, cwd):
         return None
     new_feature(state)
     return enter_phase(state, 0, env, cwd,
-                       "New feature (brainstorming started). Brainstorming covers Phases 0–3: confirm the "
-                       "tier first; its first message is the Phase 1 summary; state the Phase 2 exit answers "
-                       "before its approaches message; its design doc is the Phase 3 spec. End each phase's "
-                       "gate message with `[[gate P<n>]]`.")
+                       "New feature (brainstorming started). Brainstorming covers Phases 0–3. Its first message "
+                       "is the Phase 1 summary: name the tier there and end it with the Phase 0 and Phase 1 "
+                       "checklist lines and one `[[gate P1]]` — a single gate for both. State the Phase 2 exit "
+                       "answers before its approaches message (`[[gate P2]]`); its design doc is the Phase 3 "
+                       "spec (`[[gate P3]]`). Phase 0 checklist labels: "
+                       + "; ".join(l for l, _ in items_for(0, env, cwd)) + ". Format of each line: "
+                       "`- <label>: <where covered>` or `- <label>: N/A — <why>`.")
 
 
 def _skill_writing_plans(state, env, cwd):
