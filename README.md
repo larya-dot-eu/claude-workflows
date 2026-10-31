@@ -173,6 +173,11 @@ Superpowers only guarantees that `CLAUDE.md` outranks its skills.
 branch switches inside one command (`git checkout main && git merge feat`), so Superpowers'
 *merge locally* option is caught too.
 
+**Branches and worktrees.** When the workflow moves to a new branch or worktree (Phase 6, the Quick
+tier, a bug fix), the skin follows it — you see `WF ▸ branch changed main → feat-x · skin follows`.
+Going back to main is the same feature (still merge-guarded). To start a *separate* feature on a
+branch instead, type `/wf new` there.
+
 **Several machines.** The phase is remembered on the machine you're using, per repo and branch —
 nothing is added to your project. On another machine, `/wf on` guesses the phase from your spec and
 plan files and asks you to confirm (*"Looks like Phase 5 — correct?"*).
