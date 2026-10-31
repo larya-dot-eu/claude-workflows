@@ -42,6 +42,7 @@ class Env:
         return self.run("UserPromptSubmit", prompt=text)
 
     def state(self):
+        wf.repo_identity.cache_clear()  # a real hook run is a fresh process; the cache lives one run
         return wf.Store(self.env).load(str(self.repo))
 
     def close(self):
@@ -167,6 +168,7 @@ class TestStateAndCommands(unittest.TestCase):
         self.e.prompt("/wf on")
         sub = self.e.repo / "a" / "b"
         sub.mkdir(parents=True)
+        wf.repo_identity.cache_clear()
         self.assertEqual(wf.Store(self.e.env).load(str(sub))["enabled"], "on")
 
     def test_status_reports_without_changing(self):
@@ -631,9 +633,11 @@ class TestReviewFixes(unittest.TestCase):
         wf.handle("UserPromptSubmit", {"prompt": "/wf on", "cwd": str(d)}, self.e.env)
         subprocess.run(["git", "-C", str(d), "-c", "user.email=t@t", "-c", "user.name=t",
                         "commit", "-q", "--allow-empty", "-m", "c"], check=True)
+        wf.repo_identity.cache_clear()
         self.assertEqual(wf.Store(self.e.env).load(str(d))["enabled"], "on")
         a = wf.repo_identity(str(self.e.repo))
         subprocess.run(["git", "-C", str(self.e.repo), "checkout", "-q", "--detach"], check=True)
+        wf.repo_identity.cache_clear()
         self.assertNotEqual(wf.repo_identity(str(self.e.repo))[1], "HEAD")
         self.assertNotEqual(a, wf.repo_identity(str(self.e.repo)))
 
@@ -889,3 +893,59 @@ class TestReview2Fixes(EngineCase):
         self.e.prompt("/wf 0")
         out = self.stop("Is this Full or Quick tier?\n\n[[gate P0]]")
         self.assertNotIn("decision", out)
+
+
+# ================================================================ review R3/R4: cheap when off
+
+from unittest import mock  # noqa: E402
+
+
+class TestCheapWhenOff(unittest.TestCase):
+    def setUp(self):
+        self.e = Env()
+        wf.repo_identity.cache_clear()
+
+    def tearDown(self):
+        self.e.close()
+
+    def bash(self):
+        return self.e.run("PreToolUse", tool_name="Bash", tool_input={"command": "git merge x"})
+
+    def git_calls(self, fn):
+        real = subprocess.run
+        calls = []
+        def spy(cmd, *a, **k):
+            if cmd and cmd[0] == "git":
+                calls.append(cmd)
+            return real(cmd, *a, **k)
+        with mock.patch.object(wf.subprocess, "run", side_effect=spy):
+            fn()
+        return calls
+
+    def test_never_used_creates_no_files(self):
+        self.bash()
+        self.e.run("Stop", last_assistant_message="x\n[[gate P3]]")
+        self.e.prompt("hello")
+        self.assertFalse((self.e.data / "state").exists())
+
+    def test_never_used_runs_at_most_two_git_commands(self):
+        self.assertEqual(len(self.git_calls(self.bash)), 0)        # nothing on this machine yet
+        other = Env()
+        try:
+            other.prompt("/wf on")                                   # the skin is used in another repo
+            self.e.env["CLAUDE_PLUGIN_DATA"] = other.env["CLAUDE_PLUGIN_DATA"]
+            self.assertLessEqual(len(self.git_calls(self.bash)), 2)
+        finally:
+            other.close()
+
+    def test_switched_off_takes_no_lock(self):
+        self.e.prompt("/wf on")
+        self.e.prompt("/wf off")
+        for f in (self.e.data / "state").glob("*.lock"):
+            f.unlink()
+        self.bash()
+        self.assertEqual(list((self.e.data / "state").glob("*.lock")), [])
+
+    def test_wf_command_still_works_from_nothing(self):
+        self.e.prompt("/wf on")
+        self.assertEqual(self.e.state()["enabled"], "on")

@@ -9,6 +9,7 @@ State lives on this machine only: $CLAUDE_PLUGIN_DATA/state/<sha256(repo+branch)
 """
 import contextlib
 import fcntl
+import functools
 import hashlib
 import json
 import os
@@ -95,8 +96,10 @@ def repo_root(cwd):
     return _git(cwd, "rev-parse", "--show-toplevel") if cwd else None
 
 
+@functools.lru_cache(maxsize=16)
 def repo_identity(cwd):
-    """(git common dir, branch) — so worktrees of one repo share nothing but their repo."""
+    """(git common dir, branch) — so worktrees of one repo share nothing but their repo.
+    Cached for one hook run (handle() clears it): every hook needs it several times."""
     common = _git(cwd, "rev-parse", "--git-common-dir")  # may be relative to cwd (works on old git)
     if not common:
         return (str(Path(cwd).resolve()), "")
@@ -107,7 +110,8 @@ def repo_identity(cwd):
 
 
 def current_branch(cwd):
-    return _git(cwd, "symbolic-ref", "--short", "-q", "HEAD") or ""
+    branch = repo_identity(cwd)[1]
+    return "" if branch.startswith("detached:") else branch
 
 
 def data_dir(env):
@@ -146,6 +150,13 @@ class Store:
     def blank(self):
         return {"enabled": "off", "level": self.default_level(), "phase": None,
                 "gate_pending": None, "injected": None, "timeline": {}}
+
+    def peek(self, cwd):
+        """The saved state, read without locking, or None when this repo+branch has none."""
+        try:
+            return json.loads(self.path(cwd).read_text())
+        except Exception:
+            return None
 
     def load(self, cwd):
         s = self.blank()
@@ -894,13 +905,23 @@ def handle(event, payload, env):
     fn = HANDLERS.get(event)
     if not fn:
         return None
+    repo_identity.cache_clear()
     store = Store(env)
+    # Fast path: the skin was never used here, or is off, and this isn't a /wf command — nothing to do.
+    # No lock, no files, no further git calls (this runs before every Bash tool call in every project).
+    if not (event == "UserPromptSubmit" and parse_command(payload.get("prompt", ""))):
+        saved = store.peek(cwd) if store.dir.is_dir() else None  # never used on this machine: no git at all
+        if not saved or saved.get("enabled", "off") == "off":
+            if event == "SessionStart":
+                install_statusline(env)
+            return None
     with store.locked(cwd):
         return fn(payload, env, store, cwd)
 
 
 def statusline(payload, env):
     cwd = (payload.get("workspace") or {}).get("current_dir") or payload.get("cwd") or os.getcwd()
+    repo_identity.cache_clear()
     state = Store(env).load(cwd)
     if state["enabled"] == "off":
         return ""
