@@ -241,13 +241,14 @@ def phase_lines(doc_text, n):
 def phase_context(n, env, cwd, budget=LIMIT):
     doc = read_doc(DOC, env, cwd)
     lead = f"Current phase: {n} ({PHASE_NAMES.get(n, '?')}). "
-    text = lead + "Full rules for this phase:\n\n" + phase_section(doc, n)
+    rule = "\n\n" + checklist_instruction(n)
+    text = lead + "Full rules for this phase:\n\n" + phase_section(doc, n) + rule
     if len(text) <= budget:
         return text
     lines = phase_lines(doc, n)
     where = f" lines {lines[0]}–{lines[1]}" if lines else ""
     return (lead + f"Its rules are too long to include here: read `{doc_path(DOC, env, cwd)}`{where} "
-            "now with the Read tool (just that range), before continuing.")
+            "now with the Read tool (just that range), before continuing." + rule)
 
 
 def statusline_snippet(env):
@@ -357,7 +358,7 @@ CHECKS = {
                                   r"reuse candidate|already (exists|in the codebase)|none found")],
     3: [("behavior", r"behaviou?r"), ("interfaces", r"interface|input|output|\bapi\b"),
         ("edge cases", r"edge case|error state"), ("transactional integrity", r"transaction|atomic|eventual"),
-        ("assumptions", r"assumption"), ("access-control matrix", r"access[- \n]control|access boundar"),
+        ("assumptions", r"assumption"), ("access-control matrix", r"access[- \n]control|access boundar|authori[sz]ation|permission"),
         ("expected scale", r"\bscale\b|req(uests)?/s|\brows\b"), ("reuse", r"\breuse|net-new"),
         ("presentation vs logic", r"presentation|hardcod|\bconfig\b"),
         ("codebase checkpoint", r"conflict|unverified")],
@@ -370,7 +371,7 @@ CHECKS = {
         ("abuse-case pass", r"abuse|idor|authz|row[- ]level"), ("scale pass", r"scale pass|peak|×10|x10"),
         ("reinvention/hardcode pass", r"reinvent|hardcod")],
     6: [("isolated workspace", r"worktree|feature branch"), ("test matrix in tasks", r"\[(happy|sad|edge)\]|zombies"),
-        ("RED confirmed", r"\bred\b|fails? on (the )?assert"), ("execution method", r"subagent-driven|native|execution method")],
+        ("RED confirmed", r"\bred\b|fails? on (the )?assert"), ("execution method", r"subagent-driven|\bnative\b|execution method")],
     7: [("tests green", r"\d+ (passed|tests? pass)|all tests? (pass|green)|suite (is )?green"),
         ("execution record", r"execution record"), ("no unplanned changes", r"unplanned|scope")],
     8: [("plan vs reality", r"diverg"), ("CLAUDE.md updates", r"claude\.md"),
@@ -383,30 +384,87 @@ CHECKS = {
          ("rollback target", r"rollback|roll back"), ("lands through a PR", r"pull request|\bpr\b")],
 }
 
+# Phases whose gate claims are cross-checked against a file (the others are judged from the message).
 PHASE_FILES = {3: ("docs/superpowers/specs", "docs/specs"),
-               **{n: ("docs/superpowers/plans", "docs/plans") for n in (4, 5, 6, 7, 8, 9)}}
+               4: ("docs/superpowers/plans", "docs/plans"), 6: ("docs/superpowers/plans", "docs/plans")}
 
 
-def score(n, text):
-    """(found, total, missing labels) for phase n's checklist against `text`."""
-    items = CHECKS.get(n, [])
-    missing = [label for label, rx in items if not re.search(rx, text or "", re.I)]
-    return len(items) - len(missing), len(items), missing
+NEGATIVE = re.compile(r"^\W*(missing|todo|tbd|not (yet )?(done|covered|written|checked|included)|"
+                      r"skipped|left out|none yet|pending|partial(ly)?|incomplete|\?+)(\W|$)", re.I)
+NA = re.compile(r"^\W*n/?a\b", re.I)
 
 
-def phase_text(n, message, cwd):
-    """Claude's gate message plus the newest spec/plan file that belongs to phase n."""
+def checklist_lines(message):
+    """{label(lower): value} for lines like '- label: value' (outside code fences)."""
+    out, fence = {}, False
+    for line in (message or "").splitlines():
+        if line.lstrip().startswith("```"):
+            fence = not fence
+            continue
+        m = None if fence else re.match(r"^\s*(?:[-*•]|\d+[.)])?\s*\**\s*([^:*\n]{2,60}?)\s*\**\s*:\s*(.*)$", line)
+        if m:
+            out[m.group(1).strip().lower()] = m.group(2).strip()
+    return out
+
+
+def score(n, message, file_text=None):
+    """Score phase n's gate. An item counts only when Claude's gate message has a line
+    '- <label>: <where it is covered>' or '- <label>: N/A — why'. Negative answers (missing, TBD,
+    left out, …) don't count, and where a spec/plan file exists, a covered item whose topic isn't
+    in that file is 'unverified' and doesn't count either."""
+    lines = checklist_lines(message)
+    found, missing, unverified, listed = 0, [], [], 0
+    for label, rx in CHECKS.get(n, []):
+        value = lines.get(label.lower())
+        if value is not None:
+            listed += 1
+        if not value or NEGATIVE.match(value):
+            missing.append(label)
+        elif file_text is not None and not NA.match(value) and not re.search(rx, file_text, re.I):
+            unverified.append(label)
+        else:
+            found += 1
+    return {"found": found, "total": len(CHECKS.get(n, [])), "missing": missing,
+            "unverified": unverified, "listed": listed}
+
+
+def phase_file(n, cwd, state=None):
+    """Text of the newest spec (P3) or plan (P4, P6) file changed since this feature started, or None."""
+    since = (state or {}).get("feature_start") or 0
     root = Path(repo_root(cwd) or cwd)
-    files = [p for d in PHASE_FILES.get(n, ()) for p in (root / d).glob("*.md") if p.is_file()]
-    newest = max(files, key=lambda p: p.stat().st_mtime, default=None)
-    return (message or "") + ("\n" + newest.read_text(errors="ignore") if newest else "")
+    try:
+        files = [(p.stat().st_mtime, p) for d in PHASE_FILES.get(n, ()) for p in (root / d).glob("*.md")
+                 if p.is_file()]
+        files = [(m, p) for m, p in files if m > since]
+        if not files:
+            return None
+        with open(max(files)[1], errors="ignore") as f:
+            return f.read(500_000)
+    except OSError:
+        return None
+
+
+def checklist_instruction(n):
+    labels = [l for l, _ in CHECKS.get(n, [])]
+    if not labels:
+        return ""
+    return (f"At the Phase {n} gate, just before `[[gate P{n}]]`, list one line per checklist item, using these "
+            f"exact labels: " + "; ".join(labels) + ". Format: `- <label>: <where it is covered>` or "
+            "`- <label>: N/A — <why>`. Never list an item you did not do as covered.")
 
 
 def gate_line(n, entry):
     if not entry.get("total"):
         return f"Gate P{n} reached · waiting for your approval"
     head = f"Gate P{n} reached · checklist {entry['found']}/{entry['total']} ({score_pct(entry)}%)"
-    return head + (f" · missing: {', '.join(entry['missing'])}" if entry["missing"] else " · all items ✓")
+    if not entry.get("listed"):
+        return head + " · no checklist lines in the gate message"
+    tail = []
+    if entry["missing"]:
+        tail.append("missing: " + ", ".join(entry["missing"]))
+    if entry.get("unverified"):
+        tail.append("not in file: " + ", ".join(entry["unverified"]))
+    return head + (" · " + " · ".join(tail) if tail else " · all items ✓")
 
 
 # ---------------------------------------------------------------- phase engine
@@ -448,6 +506,8 @@ def is_approval(text):
 def move_to(state, n):
     """Set the phase and keep the timeline honest: phases left without an approved gate are
     'skipped'; going back (a loop-back) forgets everything from the target phase on."""
+    if state["phase"] is None and n is not None:
+        state.update(timeline={}, feature_start=time.time())   # entering a feature from nothing
     old, tl = state["phase"], state.setdefault("timeline", {})
     if old is not None and n is not None:
         if n > old:
@@ -462,7 +522,7 @@ def move_to(state, n):
 
 
 def new_feature(state):
-    state.update(phase=None, gate_pending=None, injected=None, timeline={})
+    state.update(phase=None, gate_pending=None, injected=None, timeline={}, feature_start=time.time())
 
 
 def timeline_marks(state):
@@ -521,18 +581,24 @@ def on_stop(payload, env, store, cwd):
         store.save(cwd, state)
     if gate is None:
         return None
-    found, total, missing = score(gate, phase_text(gate, payload.get("last_assistant_message"), cwd))
+    r = score(gate, payload.get("last_assistant_message"), phase_file(gate, cwd, state))
     tl = state.setdefault("timeline", {})
-    entry = dict(tl.get(str(gate), {}), found=found, total=total, missing=missing)
+    prev = tl.get(str(gate), {})
+    if not r["listed"] and prev.get("listed"):
+        r = {k: prev[k] for k in ("found", "total", "missing", "unverified", "listed")}  # keep last real score
+    missing = r["missing"] + r["unverified"]
+    entry = dict(prev, **r)
     tl[str(gate)] = entry
     out = output("Stop", None, gate_line(gate, entry))
+    body = (payload.get("last_assistant_message") or "").rsplit("[[gate", 1)[0].rstrip()
     if (state["level"] == "strict" and missing and not entry.get("nudged")
-            and not payload.get("stop_hook_active")):
+            and not payload.get("stop_hook_active") and not body.endswith("?")):
         entry["nudged"] = True
         out["decision"] = "block"
         out["reason"] = (f"Workflow checklist for the Phase {gate} gate is incomplete. Missing: "
-                         f"{', '.join(missing)}. Add each one, or write it as 'N/A — <why>', then end the "
-                         f"message with `[[gate P{gate}]]` again. (This reminder comes once per gate.)")
+                         f"{', '.join(missing)}. Do each one (or decide it is N/A, with the reason), then end "
+                         f"with the checklist lines and `[[gate P{gate}]]` again. {checklist_instruction(gate)} "
+                         "(This reminder comes once per gate.)")
     store.save(cwd, state)
     return out
 
@@ -542,7 +608,7 @@ def approve(state, env, cwd):
     tl = state.setdefault("timeline", {})
     tl[str(gate)] = dict(tl.get(str(gate), {}), status="done")
     if gate >= 10:
-        state.update(phase=None, gate_pending=None, injected=None, completed_at=time.time())
+        state.update(phase=None, gate_pending=None, injected=None, completed_at=time.time(), timeline={})
         return ("The user approved the Phase 10 gate. The workflow is complete for this feature. "
                 "Tell the user in one line; a new feature starts with brainstorming or `/wf new`.")
     nxt = gate + 1

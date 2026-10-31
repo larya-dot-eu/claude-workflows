@@ -740,55 +740,74 @@ matrix: no access boundaries. Expected scale: N/A, pure function. Reuse: follows
 logic: N/A. Checkpoint: no conflicts with existing code, no unverified assumptions."""
 
 
+def checklist(n, skip=(), bad=None):
+    """A gate message whose checklist covers every item of phase n except `skip`."""
+    lines = []
+    for label, _ in wf.CHECKS[n]:
+        if label in skip:
+            continue
+        lines.append(f"- {label}: {bad if bad and label == bad[0] else 'covered in section 1'}"
+                     if not isinstance(bad, tuple) else
+                     f"- {label}: {bad[1] if label == bad[0] else 'covered in section 1'}")
+    return "Gate summary\n" + "\n".join(lines) + f"\n\n[[gate P{n}]]"
+
+
 class TestChecklist(EngineCase):
-    def test_every_phase_has_a_checklist(self):
+    def test_every_phase_has_a_checklist_with_unique_labels(self):
         for n in range(0, 11):
-            self.assertGreaterEqual(len(wf.CHECKS[n]), 3, n)
+            labels = [l for l, _ in wf.CHECKS[n]]
+            self.assertGreaterEqual(len(labels), 3, n)
+            self.assertEqual(len(labels), len(set(labels)), n)
 
-    def test_full_spec_scores_100(self):
-        found, total, missing = wf.score(3, FULL_SPEC)
-        self.assertEqual((found, missing), (total, []))
+    def test_full_checklist_scores_100(self):
+        r = wf.score(1, checklist(1))
+        self.assertEqual((r["found"], r["missing"], r["unverified"]), (r["total"], [], []))
 
-    def test_missing_items_are_named(self):
-        text = FULL_SPEC.replace("Access-control\nmatrix: no access boundaries.", "").replace(
-            "Expected scale: N/A, pure function.", "")
-        found, total, missing = wf.score(3, text)
-        self.assertEqual(found, total - 2)
-        self.assertEqual(missing, ["access-control matrix", "expected scale"])
+    def test_mentioning_items_as_left_out_scores_zero(self):
+        msg = ("I left out edge cases, transactional integrity, assumptions, access control, scale, "
+               "reuse, and presentation vs logic.\n[[gate P3]]")
+        self.assertEqual(wf.score(3, msg)["found"], 0)
 
-    def test_gate_shows_score_and_missing(self):
-        self.e.prompt("/wf 3")
-        out = self.stop("Spec:\nBehavior: x. Interfaces: y. Edge cases: z.\n[[gate P3]]")
-        line = shown(out)
-        self.assertRegex(line, r"Gate P3 reached · checklist \d+/\d+ \(\d+%\) · missing: ")
-        self.assertIn("access-control matrix", line)
+    def test_negative_answers_do_not_count(self):
+        for val in ("missing", "TODO", "TBD", "not covered yet", "left out", "?", "skipped",
+                    "**not covered** (left out)", "**partially done**, only opened calc.py", "partial"):
+            r = wf.score(1, checklist(1, bad=("constraints", val)))
+            self.assertIn("constraints", r["missing"], val)
 
-    def test_spec_file_counts_for_phase_3(self):
+    def test_na_with_reason_counts(self):
+        r = wf.score(1, checklist(1, bad=("constraints", "N/A — greenfield, none")))
+        self.assertEqual(r["missing"], [])
+
+    def test_claim_not_found_in_spec_file_is_unverified(self):
         d = self.e.repo / "docs/superpowers/specs"
         d.mkdir(parents=True)
-        (d / "2026-11-01-sub-design.md").write_text(FULL_SPEC)
-        self.e.prompt("/wf 3")
-        out = self.stop("The spec is saved; please review.\n[[gate P3]]")
-        self.assertIn("all items ✓", shown(out))
+        (d / "s-design.md").write_text(FULL_SPEC.replace("Access-control\nmatrix: no access boundaries.", ""))
+        r = wf.score(3, checklist(3), wf.phase_file(3, str(self.e.repo)))
+        self.assertEqual(r["unverified"], ["access-control matrix"])
+        self.assertEqual(r["found"], r["total"] - 1)
 
-    def test_plan_file_counts_for_phase_4(self):
-        d = self.e.repo / "docs/superpowers/plans"
-        d.mkdir(parents=True)
-        (d / "plan.md").write_text("## Global Constraints\n... Ownership map ...\n")
-        self.e.prompt("/wf 4")
-        out = self.stop("Plan saved.\n[[gate P4]]")
-        self.assertNotIn("global constraints", shown(out).split("missing:")[-1])
+    def test_gate_line_shows_score_missing_and_unverified(self):
+        self.e.prompt("/wf 3")
+        out = self.stop(checklist(3, skip=("expected scale",)))
+        self.assertRegex(shown(out), r"Gate P3 reached · checklist \d+/\d+ \(\d+%\) · missing: expected scale")
+
+    def test_no_checklist_block_says_so(self):
+        self.e.prompt("/wf 3")
+        self.assertIn("no checklist lines", shown(self.stop("Here is the spec.\n[[gate P3]]")))
+
+    def test_phase_rules_tell_claude_the_checklist_labels(self):
+        out = self.e.prompt("/wf 2")
+        for label, _ in wf.CHECKS[2]:
+            self.assertIn(label, ctx(out))
 
     def test_score_reaches_statusline_and_timeline(self):
-        self.e.prompt("/wf new")
-        self.stop("x\n[[gate P0]]")
-        self.e.prompt("approved")
         self.e.prompt("/wf 3")
-        self.stop("Behavior: x. Interfaces: y.\n[[gate P3]]")
+        self.stop(checklist(3, skip=("reuse", "assumptions")))
         pct = wf.score_pct(self.e.state()["timeline"]["3"])
-        self.assertRegex(wf.statusline({"cwd": str(self.e.repo)}, self.e.env), rf"\[WF P3 {pct}% · ")
+        self.assertEqual(pct, 80)
+        self.assertRegex(wf.statusline({"cwd": str(self.e.repo)}, self.e.env), r"\[WF P3 80%")
         self.e.prompt("approved")
-        self.assertIn(f"P3 ✓ {pct}%", shown(self.e.prompt("/wf status")))
+        self.assertIn("P3 ✓ 80%", shown(self.e.prompt("/wf status")))
 
 
 # ================================================================ F4: strict nudge
@@ -822,7 +841,7 @@ class TestStrictNudge(EngineCase):
     def test_complete_gate_not_blocked(self):
         self.e.prompt("/wf strict")
         self.e.prompt("/wf 3")
-        self.assertNotIn("decision", self.gate3(FULL_SPEC + "\n[[gate P3]]"))
+        self.assertNotIn("decision", self.gate3(checklist(3)))
 
     def test_loop_back_allows_a_new_nudge(self):
         self.e.prompt("/wf strict")
@@ -831,3 +850,37 @@ class TestStrictNudge(EngineCase):
         self.e.prompt("approved")
         self.e.prompt("/wf 3")
         self.assertEqual(self.gate3().get("decision"), "block")
+
+
+class TestReview2Fixes(EngineCase):
+    def test_finished_feature_timeline_does_not_leak(self):
+        self.e.prompt("/wf strict")
+        self.e.prompt("/wf 10")
+        self.stop("deployed\n[[gate P10]]")
+        self.e.prompt("approved")
+        self.e.prompt("/wf 0")
+        self.assertEqual(self.e.state()["timeline"], {})
+
+    def test_reemitting_gate_without_lines_keeps_score(self):
+        self.e.prompt("/wf 1")
+        self.stop(checklist(1))
+        self.stop("Answer to your side question.\n[[gate P1]]")
+        self.assertEqual(wf.score_pct(self.e.state()["timeline"]["1"]), 100)
+
+    def test_old_feature_spec_is_not_used(self):
+        d = self.e.repo / "docs/superpowers/specs"
+        d.mkdir(parents=True)
+        old = d / "old-design.md"
+        old.write_text(FULL_SPEC)
+        os.utime(old, (1, 1))
+        self.e.prompt("/wf new")
+        self.assertIsNone(wf.phase_file(3, str(self.e.repo), self.e.state()))
+
+    def test_only_spec_plan_phases_check_files(self):
+        self.assertIsNone(wf.phase_file(8, str(self.e.repo), self.e.state()))
+
+    def test_strict_does_not_block_a_question(self):
+        self.e.prompt("/wf strict")
+        self.e.prompt("/wf 0")
+        out = self.stop("Is this Full or Quick tier?\n\n[[gate P0]]")
+        self.assertNotIn("decision", out)

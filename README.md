@@ -137,6 +137,27 @@ phase and hands Claude only that phase's rules. Anything with *but*, *change*, a
 not an approval, and a turn that ends without the marker clears the pending gate — a side question
 can never be mistaken for approval. If a marker is ever missed, `/wf 4` puts you back on track.
 
+**What you see in the terminal** (shown to you only — none of it is sent to Claude, so it costs no context):
+
+```
+WF ▸ brainstorming started → Phase 0 (Tier + Prereqs)
+WF ▸ Gate P1 approved → Phase 2 (Explore)
+WF ▸ Gate P3 reached · checklist 7/10 (70%) · missing: access-control matrix, expected scale · not in file: reuse
+WF ▸ ⚠ writing-plans — spec (Phase 3) is not approved yet
+```
+
+- **Checklist %** — every gate has a checklist taken from the full doc. Claude lists each item on its own
+  line (`- expected scale: §4 of the spec` or `- expected scale: N/A — pure function`). Only real answers
+  count: *missing*, *TBD*, *left out*, *partially* don't. For the spec (P3) and plan (P4, P6) the hook also
+  checks the file: an item Claude calls covered that isn't in the file shows as *not in file*. It measures
+  **coverage, not quality** — reading the gate is still your job.
+- **Timeline** — `/wf status` shows `P0 ✓ · P1 ✓ · P2 ⚠ skipped · P3 70% (gate)`. A phase left without an
+  approved gate (Claude jumping ahead, a skill starting early) is marked *skipped*, so you can see whether
+  brainstorming really went through Phases 1, 2 and 3.
+- **Status line** — `[WF P3 70% · ✓✓⚠ · standard]` (current phase, its checklist %, earlier phases).
+- **strict** — when a gate has missing items, Claude gets one extra turn to do them (or mark them N/A with a
+  reason) and ends at the gate again. Once per gate; never while Claude is asking you a question.
+
 **With Superpowers.** When the skin is on, the skills drive the phases: `brainstorming` starts a feature
 at the tier check, `writing-plans` enters Phase 4 (and is told not to ask for an execution method yet),
 `subagent-driven-development` / `executing-plans` enter Phase 7 — or warn and stop if Phases 5–6
