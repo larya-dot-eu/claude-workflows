@@ -1012,3 +1012,55 @@ class TestEarlierGateIsARecap(EngineCase):
         self.e.prompt("/wf 3")
         self.assertEqual(self.e.state()["phase"], 3)
         self.assertEqual(wf.timeline_marks(self.e.state()), "✓✓✓")
+
+
+# ================================================================ consistency review C1: follow branch switches
+
+def git(repo, *args):
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+
+
+class TestFollowBranch(unittest.TestCase):
+    def setUp(self):
+        self.e = Env(branch="main")
+        self.e.prompt("/wf on")
+        self.e.prompt("/wf 6")
+
+    def tearDown(self):
+        self.e.close()
+
+    def test_new_feature_branch_follows(self):
+        git(self.e.repo, "checkout", "-q", "-b", "feat-x")
+        out = self.e.run("PreToolUse", tool_name="Bash", tool_input={"command": "ls"})
+        s = self.e.state()
+        self.assertEqual((s["enabled"], s["phase"]), ("on", 6))
+        self.assertIn("main → feat-x", shown(out))
+
+    def test_worktree_follows_and_gate_works_there(self):
+        wt = Path(self.e.tmp.name) / "wt"
+        git(self.e.repo, "worktree", "add", "-q", "-b", "feat-y", str(wt))
+        out = wf.handle("Stop", {"cwd": str(wt), "last_assistant_message": "x\n[[gate P6]]"}, self.e.env)
+        self.assertIn("Gate P6", shown(out))
+        wf.repo_identity.cache_clear()
+        self.assertEqual(wf.Store(self.e.env).load(str(wt))["gate_pending"], 6)
+
+    def test_back_on_main_is_the_same_feature_and_still_guarded(self):
+        git(self.e.repo, "checkout", "-q", "-b", "feat-x")
+        self.e.prompt("/wf 8")
+        git(self.e.repo, "checkout", "-q", "main")
+        self.assertEqual(self.e.state()["phase"], 8)
+        out = self.e.run("PreToolUse", tool_name="Bash", tool_input={"command": "git merge feat-x"})
+        self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "ask")
+
+    def test_wf_new_on_followed_branch_starts_separate_feature(self):
+        git(self.e.repo, "checkout", "-q", "-b", "feat-x")
+        self.e.prompt("/wf new")
+        self.assertEqual(self.e.state()["phase"], 0)
+        git(self.e.repo, "checkout", "-q", "main")
+        self.assertEqual(self.e.state()["phase"], 6)          # the original feature is back on main
+
+    def test_off_skin_is_not_followed(self):
+        self.e.prompt("/wf off")
+        git(self.e.repo, "checkout", "-q", "-b", "feat-x")
+        self.assertIsNone(self.e.run("PreToolUse", tool_name="Bash", tool_input={"command": "ls"}))
+        self.assertEqual(self.e.state()["enabled"], "off")

@@ -127,9 +127,47 @@ class Store:
         self.dir = data_dir(env) / "state"
 
     def path(self, cwd):
+        """This repo+branch's own state file (may hold a redirect, see resolve)."""
         common, branch = repo_identity(cwd)
         key = hashlib.sha256(f"{common}\0{branch}".encode()).hexdigest()[:32]
         return self.dir / f"{key}.json"
+
+    def pointer(self, cwd):
+        """Per-repo note of the state file saved last — what a new branch follows."""
+        common = repo_identity(cwd)[0]
+        return self.dir / (hashlib.sha256(common.encode()).hexdigest()[:32] + ".last")
+
+    def resolve(self, cwd):
+        """The state file to use: a branch the skin moved away from redirects to where it went."""
+        p = self.path(cwd)
+        try:
+            target = json.loads(p.read_text()).get("moved_to")
+            if target and Path(target).is_file():
+                return Path(target)
+        except Exception:
+            pass
+        return p
+
+    def follow(self, cwd):
+        """The workflow switches branch (Phase 6 worktree, Quick tier, bug fixes). When this branch has
+        no state yet and the repo's last active feature is on, carry it over and leave a redirect behind.
+        Returns the branch it came from, or None."""
+        mine = self.path(cwd)
+        if mine.exists():
+            return None
+        try:
+            ptr = json.loads(self.pointer(cwd).read_text())
+            origin = Path(ptr["path"])
+            state = json.loads(origin.read_text())
+        except Exception:
+            return None
+        branch = repo_identity(cwd)[1]
+        if state.get("moved_to") or state.get("enabled", "off") == "off" or ptr.get("branch") == branch:
+            return None
+        moved = dict(state, followed_from={"path": str(origin), "branch": ptr.get("branch"), "state": state})
+        self.save_at(mine, moved, branch, cwd)
+        _atomic_write(origin, {"moved_to": str(mine), "branch": ptr.get("branch")})
+        return ptr.get("branch") or "?"
 
     def default_level(self):
         try:
@@ -155,29 +193,41 @@ class Store:
     def peek(self, cwd):
         """The saved state, read without locking, or None when this repo+branch has none."""
         try:
-            return json.loads(self.path(cwd).read_text())
+            return json.loads(self.resolve(cwd).read_text())
         except Exception:
             return None
 
     def load(self, cwd):
         s = self.blank()
         try:
-            s.update(json.loads(self.path(cwd).read_text()))
+            s.update(json.loads(self.resolve(cwd).read_text()))
         except Exception:
             pass
         return s
 
     def save(self, cwd, state):
-        p = self.path(cwd)
+        self.save_at(self.resolve(cwd), state, repo_identity(cwd)[1], cwd)
+
+    def save_at(self, p, state, branch, cwd=None):
         p.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(p, state)
+        if cwd:
+            _atomic_write(self.pointer(cwd), {"path": str(p), "branch": branch})
+
+    def unfollow(self, cwd, state):
+        """/wf new on a followed branch: this branch becomes its own feature; the original goes back."""
+        origin = state.pop("followed_from", None)
+        if not origin:
+            return
+        with contextlib.suppress(Exception):
+            _atomic_write(Path(origin["path"]), origin["state"])
 
     @contextlib.contextmanager
     def locked(self, cwd):
         """Hold the state's lock across a whole load → modify → save."""
         p = self.path(cwd)
         p.parent.mkdir(parents=True, exist_ok=True)
-        with open(str(p) + ".lock", "w") as lock:
+        with open(str(self.pointer(cwd)) + ".lock", "w") as lock:   # one lock per repo: follow/redirects span branches
             fcntl.flock(lock, fcntl.LOCK_EX)
             yield
 
@@ -353,6 +403,7 @@ def run_command(cmd, args, state, store, env, cwd):
     if cmd == "new":
         if state["enabled"] == "off":
             state["enabled"] = "on"
+        store.unfollow(cwd, state)
         new_feature(state)
         state.update(phase=0, injected=0)
         lead = f"{tell}new feature — starting at the tier check.\n\n"
@@ -917,6 +968,21 @@ def handle(event, payload, env):
         return None
     repo_identity.cache_clear()
     store = Store(env)
+    followed = None
+    if store.dir.is_dir() and not store.path(cwd).exists() and store.pointer(cwd).exists():
+        with store.locked(cwd):
+            followed = store.follow(cwd)
+    out = _handle(event, payload, env, store, cwd, fn)
+    if followed:
+        st = store.load(cwd)
+        line = (f"WF ▸ branch changed {followed} → {repo_identity(cwd)[1]} · skin follows "
+                f"({describe(st).split(', ', 1)[-1]})")
+        out = out or {}
+        out["systemMessage"] = line + ("\n" + out["systemMessage"] if out.get("systemMessage") else "")
+    return out
+
+
+def _handle(event, payload, env, store, cwd, fn):
     # Fast path: the skin was never used here, or is off, and this isn't a /wf command — nothing to do.
     # No lock, no files, no further git calls (this runs before every Bash tool call in every project).
     if not (event == "UserPromptSubmit" and parse_command(payload.get("prompt", ""))):
