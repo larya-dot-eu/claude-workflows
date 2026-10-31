@@ -185,7 +185,7 @@ class TestStateAndCommands(unittest.TestCase):
         self.e.prompt("/wf 4")
         out = self.e.run("SessionStart", source="compact")
         self.assertIn("Phases — do → exit gate", ctx(out))
-        self.assertIn("## Phase 4", ctx(out))
+        self.assertRegex(ctx(out), r"## Phase 4|Current phase: 4 .*lines \d+–\d+")
 
     def test_project_copy_of_doc_wins(self):
         (self.e.repo / "Claude-Workflows-Best-Practices.md").write_text(
@@ -324,7 +324,7 @@ class TestPhaseEngine(EngineCase):
 
     def test_approval_without_pending_gate_does_nothing(self):
         self.e.prompt("/wf 3")
-        self.assertIsNone(self.e.prompt("approved"))
+        self.assertIn("no gate", ctx(self.e.prompt("approved")))
         self.assertEqual(self.e.state()["phase"], 3)
 
     def test_turn_without_marker_clears_pending_gate(self):
@@ -333,7 +333,7 @@ class TestPhaseEngine(EngineCase):
         self.e.prompt("why sqlite?")
         self.stop("Because ... (answer to side question)")
         self.assertIsNone(self.e.state()["gate_pending"])
-        self.assertIsNone(self.e.prompt("ok"))
+        self.assertIn("no gate", ctx(self.e.prompt("ok")))
         self.assertEqual(self.e.state()["phase"], 3)
 
     def test_non_approval_keeps_phase(self):
@@ -550,3 +550,84 @@ class TestSubagentAndDuplicates(unittest.TestCase):
             self.assertIn("twice", ctx(out))
         finally:
             e.close()
+
+
+# ================================================================ review fixes
+
+class TestReviewFixes(unittest.TestCase):
+    def setUp(self):
+        self.e = Env()
+
+    def tearDown(self):
+        self.e.close()
+
+    def test_every_injection_fits_hook_limit(self):
+        (self.e.repo / "docs/superpowers/specs").mkdir(parents=True)
+        (self.e.repo / "docs/superpowers/specs/a-design.md").write_text("s")
+        for level in ("lite", "standard", "strict"):
+            for n in range(0, 11):
+                outs = [self.e.prompt(f"/wf on {level}"), self.e.prompt(f"/wf {n}"),
+                        self.e.run("SessionStart", source="compact")]
+                for out in outs:
+                    self.assertLess(len(ctx(out)), 10000, (level, n))
+
+    def test_oversize_phase_points_to_exact_lines(self):
+        self.e.prompt("/wf on")
+        out = self.e.prompt("/wf 10")
+        text = ctx(out)
+        if "## Phase 10" not in text:
+            self.assertRegex(text, r"lines \d+–\d+")
+
+    def test_approval_without_gate_gets_a_hint_not_silence(self):
+        self.e.prompt("/wf on")
+        self.e.prompt("/wf 3")
+        out = self.e.prompt("approved")
+        self.assertIn("no gate", ctx(out).lower())
+        self.assertEqual(self.e.state()["phase"], 3)
+
+    def test_skin_tells_claude_to_repeat_marker_while_waiting(self):
+        out = self.e.prompt("/wf on")
+        self.assertIn("still waiting", ctx(out))
+
+    def test_approval_word_edge_cases(self):
+        for t in ["continue", "great", "good"]:
+            self.assertFalse(wf.is_approval(t), t)
+        self.assertTrue(wf.is_approval("yes, no changes needed"))
+        self.assertTrue(wf.is_approval("looks good, no issues"))
+
+    def test_unicode_digit_is_not_a_phase(self):
+        self.assertEqual(wf.parse_command("/wf ²")[0], "²")
+
+    def test_guard_forms(self):
+        for cmd, br in [("git push origin HEAD", "main"), ("git push origin +main", "feat"),
+                        ("git -C app merge feat", "main"), ("git -c a=b push origin main", "feat"),
+                        ("git push --all origin", "feat"), ("git push --mirror origin", "feat"),
+                        ("git pull origin feat", "main")]:
+            self.assertTrue(wf.guard_reason(cmd, br), (cmd, br))
+        for cmd, br in [("git merge-base HEAD main", "main"), ("git pull", "feat"),
+                        ("git pull origin main", "main"), ("git push origin HEAD", "feat")]:
+            self.assertFalse(wf.guard_reason(cmd, br), (cmd, br))
+
+    def test_completed_feature_is_not_guessed_again(self):
+        plan = self.e.repo / "docs/plans/x-plan.md"
+        plan.parent.mkdir(parents=True)
+        plan.write_text("p\n## Execution record\n")
+        self.e.prompt("/wf on")
+        self.e.prompt("/wf 10")
+        self.e.run("Stop", last_assistant_message="done\n[[gate P10]]")
+        self.e.prompt("approved")
+        self.e.prompt("/wf off")
+        self.e.prompt("/wf on")
+        self.assertIsNone(self.e.state()["phase"])
+
+    def test_state_survives_first_commit_and_detached_heads_differ(self):
+        d = Path(self.e.tmp.name) / "fresh"
+        subprocess.run(["git", "init", "-q", "-b", "feat", str(d)], check=True)
+        wf.handle("UserPromptSubmit", {"prompt": "/wf on", "cwd": str(d)}, self.e.env)
+        subprocess.run(["git", "-C", str(d), "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-q", "--allow-empty", "-m", "c"], check=True)
+        self.assertEqual(wf.Store(self.e.env).load(str(d))["enabled"], "on")
+        a = wf.repo_identity(str(self.e.repo))
+        subprocess.run(["git", "-C", str(self.e.repo), "checkout", "-q", "--detach"], check=True)
+        self.assertNotEqual(wf.repo_identity(str(self.e.repo))[1], "HEAD")
+        self.assertNotEqual(a, wf.repo_identity(str(self.e.repo)))

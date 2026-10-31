@@ -7,6 +7,7 @@ any error means "do nothing", so a broken skin can never break a session.
 
 State lives on this machine only: $CLAUDE_PLUGIN_DATA/state/<sha256(repo+branch)>.json
 """
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -15,10 +16,12 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 LEVELS = ("lite", "standard", "strict")
 DEFAULT_LEVEL = "standard"
+LIMIT = 9500  # hook additionalContext is capped at 10,000 chars
 DOC = "Claude-Workflows-Best-Practices.md"
 SPINE = "Claude-Workflows-Best-Practices-Compact.md"
 PHASE_NAMES = {0: "Tier + Prereqs", 1: "Context", 2: "Explore", 3: "Spec", 4: "Plan",
@@ -94,11 +97,17 @@ def repo_root(cwd):
 
 def repo_identity(cwd):
     """(git common dir, branch) — so worktrees of one repo share nothing but their repo."""
-    common = _git(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    common = _git(cwd, "rev-parse", "--git-common-dir")  # may be relative to cwd (works on old git)
     if not common:
         return (str(Path(cwd).resolve()), "")
-    branch = _git(cwd, "rev-parse", "--abbrev-ref", "HEAD") or ""
-    return (str(Path(common).resolve()), branch)
+    branch = _git(cwd, "symbolic-ref", "--short", "-q", "HEAD")  # works before the first commit
+    if not branch:
+        branch = "detached:" + (_git(cwd, "rev-parse", "HEAD") or "")
+    return (str((Path(cwd) / common).resolve()), branch)
+
+
+def current_branch(cwd):
+    return _git(cwd, "symbolic-ref", "--short", "-q", "HEAD") or ""
 
 
 def data_dir(env):
@@ -149,16 +158,28 @@ class Store:
     def save(self, cwd, state):
         p = self.path(cwd)
         p.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write(p, state)
+
+    @contextlib.contextmanager
+    def locked(self, cwd):
+        """Hold the state's lock across a whole load → modify → save."""
+        p = self.path(cwd)
+        p.parent.mkdir(parents=True, exist_ok=True)
         with open(str(p) + ".lock", "w") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            _atomic_write(p, state)
+            yield
 
 
 def _atomic_write(path, obj):
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp-")
-    with os.fdopen(fd, "w") as f:
-        json.dump(obj, f, indent=1)
-    os.replace(tmp, path)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(obj, f, indent=1) if not isinstance(obj, bytes) else f.buffer.write(obj)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 # ---------------------------------------------------------------- output helpers
@@ -177,26 +198,46 @@ def describe(state):
     return f"{state['enabled']}, level {state['level']}, {where}"
 
 
-def skin_context(state, env, cwd, with_phase=True):
-    """What Claude needs while the skin is on: spine (or lite rules) + current phase section."""
+def skin_context(state, env, cwd, with_phase=True, budget=LIMIT):
+    """What Claude needs while the skin is on: spine (or lite rules) + current phase section,
+    kept under `budget` characters (a phase that doesn't fit is given as an exact line range to read)."""
     spine = read_doc(SPINE, env, cwd)
     if state["level"] == "lite":
         return "Claude-Workflows skin (lite): apply these rules in every step.\n\n" + every_phase_rules(spine)
     parts = ["Claude-Workflows skin is on (level %s). This project follows the phased workflow below; "
              "the user clears every exit gate. When you reach a phase's exit gate, end your message with "
-             "the line `[[gate P<n>]]` (n = the phase number) and wait for the user." % state["level"],
+             "the line `[[gate P<n>]]` (n = the phase number) and wait for the user. If you answer a question "
+             "while still waiting at that gate, end that message with the same line again." % state["level"],
              spine]
     if state["level"] == "strict":
         parts.append("Strict level: run Phase 5 as one fresh-context subagent on the most capable model; "
                      "the Quick tier always needs the user's explicit confirmation.")
+    head = "\n\n".join(p for p in parts if p)
     if with_phase and state["phase"] is not None:
-        parts.append(phase_context(state["phase"], env, cwd))
-    return "\n\n".join(p for p in parts if p)
+        head += "\n\n" + phase_context(state["phase"], env, cwd, budget - len(head) - 2)
+    return head
 
 
-def phase_context(n, env, cwd):
-    return (f"Current phase: {n} ({PHASE_NAMES.get(n, '?')}). Full rules for this phase:\n\n"
-            + phase_section(read_doc(DOC, env, cwd), n))
+def phase_lines(doc_text, n):
+    """1-based (first, last) line numbers of phase n's section in the doc."""
+    section = phase_section(doc_text, n).rstrip("\n")
+    start = doc_text.find(section)
+    if not section or start < 0:
+        return None
+    first = doc_text.count("\n", 0, start) + 1
+    return first, first + section.count("\n")
+
+
+def phase_context(n, env, cwd, budget=LIMIT):
+    doc = read_doc(DOC, env, cwd)
+    lead = f"Current phase: {n} ({PHASE_NAMES.get(n, '?')}). "
+    text = lead + "Full rules for this phase:\n\n" + phase_section(doc, n)
+    if len(text) <= budget:
+        return text
+    lines = phase_lines(doc, n)
+    where = f" lines {lines[0]}–{lines[1]}" if lines else ""
+    return (lead + f"Its rules are too long to include here: read `{doc_path(DOC, env, cwd)}`{where} "
+            "now with the Read tool (just that range), before continuing.")
 
 
 def statusline_snippet(env):
@@ -219,7 +260,7 @@ def parse_command(prompt):
     args = (m.group(1) or "").lower().split()
     if not args:
         return ("status", [])
-    if args[0].isdigit():
+    if args[0].isdecimal() and args[0].isascii():
         return ("phase", [args[0]])
     return (args[0], args[1:])
 
@@ -235,18 +276,19 @@ def run_command(cmd, args, state, store, env, cwd):
         state["enabled"] = "on"
         guess = ""
         if state["phase"] is None and state["level"] != "lite":
-            n, why = guess_phase(cwd)
+            n, why = guess_phase(cwd, state.get("completed_at") or 0)
             if n is not None:
                 state.update(phase=n, injected=n)
                 guess = (f"\n\nNo saved phase for this branch on this machine; {why}. Ask the user: "
                          f"\"Looks like Phase {n} ({PHASE_NAMES[n]}) — correct? (`/wf <n>` to change)\"")
-        return state, (f"{tell}workflow skin ON ({describe(state)})." + guess + old_hooks_warning(cwd) + "\n\n"
-                       + skin_context(state, env, cwd))
+        lead = f"{tell}workflow skin ON ({describe(state)})." + guess + old_hooks_warning(cwd) + "\n\n"
+        return state, lead + skin_context(state, env, cwd, budget=LIMIT - len(lead))
     if cmd == "resume":
         if state["enabled"] == "off":
             return None, tell + "the skin is off — use `/wf on`."
         state["enabled"] = "on"
-        return state, f"{tell}workflow skin resumed ({describe(state)}).\n\n" + skin_context(state, env, cwd)
+        lead = f"{tell}workflow skin resumed ({describe(state)}).\n\n"
+        return state, lead + skin_context(state, env, cwd, budget=LIMIT - len(lead))
     if cmd == "pause":
         if state["enabled"] == "off":
             return None, tell + "the skin is already off."
@@ -271,12 +313,14 @@ def run_command(cmd, args, state, store, env, cwd):
         if state["enabled"] == "off":
             state["enabled"] = "on"
         state.update(phase=n, gate_pending=None, injected=n)
-        return state, f"{tell}moved to Phase {n} ({PHASE_NAMES[n]}).\n\n" + skin_context(state, env, cwd)
+        lead = f"{tell}moved to Phase {n} ({PHASE_NAMES[n]}).\n\n"
+        return state, lead + skin_context(state, env, cwd, budget=LIMIT - len(lead))
     if cmd == "new":
         if state["enabled"] == "off":
             state["enabled"] = "on"
         state.update(phase=0, gate_pending=None, injected=0)
-        return state, f"{tell}new feature — starting at the tier check.\n\n" + skin_context(state, env, cwd)
+        lead = f"{tell}new feature — starting at the tier check.\n\n"
+        return state, lead + skin_context(state, env, cwd, budget=LIMIT - len(lead))
     return None, "Show the user: unknown /wf command. " + HELP
 
 
@@ -285,8 +329,10 @@ def run_command(cmd, args, state, store, env, cwd):
 
 GATE_RE = re.compile(r"^\s*\[\[gate P(\d{1,2})\]\]\s*$")
 APPROVE_RE = re.compile(
-    r"^(approved?|i approve|looks good|lgtm|proceed|go ahead|ok(ay)?|yes|yep|ship it|continue|"
-    r"sounds good|perfect|great|good)\b", re.I)
+    r"^(approved?|i approve|looks good|lgtm|proceed|go ahead|ok(ay)?|yes|yep|ship it|"
+    r"sounds good|perfect)\b", re.I)
+HARMLESS_NO = re.compile(r"\bno (changes?|issues?|problems?|objections?|further (changes?|comments?))\b"
+                         r"( needed)?", re.I)
 VETO_RE = re.compile(r"\b(but|except|however|change|fix|instead|not|no|don'?t|wait|first|before|"
                      r"why|how|what|explain|redo|rename|remove|add)\b|\?", re.I)
 
@@ -312,7 +358,7 @@ def is_approval(text):
     t = (text or "").strip()
     if not t or len(t) > 80 or t.startswith("/"):
         return False
-    return bool(APPROVE_RE.match(t)) and not VETO_RE.search(t)
+    return bool(APPROVE_RE.match(t)) and not VETO_RE.search(HARMLESS_NO.sub("", t))
 
 
 def enter_phase(state, n, env, cwd, lead):
@@ -345,7 +391,7 @@ def on_stop(payload, env, store, cwd):
 def approve(state, env, cwd):
     gate = state["gate_pending"]
     if gate >= 10:
-        state.update(phase=None, gate_pending=None, injected=None)
+        state.update(phase=None, gate_pending=None, injected=None, completed_at=time.time())
         return ("The user approved the Phase 10 gate. The workflow is complete for this feature. "
                 "Tell the user in one line; a new feature starts with brainstorming or `/wf new`.")
     nxt = gate + 1
@@ -441,11 +487,13 @@ def on_expansion(payload, env, store, cwd):
 
 
 
-def guess_phase(cwd):
-    """Best guess of the phase from files in the repo: (phase, evidence) or (None, '')."""
+def guess_phase(cwd, since=0):
+    """Best guess of the phase from spec/plan files changed after `since` (a finished feature's
+    files don't count): (phase, evidence) or (None, '')."""
     root = Path(repo_root(cwd) or cwd)
     def files(*dirs):
-        return [p for d in dirs for p in sorted((root / d).glob("*.md")) if p.is_file()]
+        return [p for d in dirs for p in sorted((root / d).glob("*.md"))
+                if p.is_file() and p.stat().st_mtime > since]
     plans, specs = files("docs/superpowers/plans", "docs/plans"), files("docs/superpowers/specs", "docs/specs")
     for p in plans:
         if "## Execution record" in p.read_text(errors="ignore"):
@@ -464,18 +512,34 @@ DEFAULT_BRANCHES = ("main", "master")
 _DEF = r"(?:main|master)"
 
 
+_GIT = r"\bgit(?:\s+-(?:C|c)\s+\S+)*\s+"
+
+
+def _hits_default(ref, branch):
+    ref = ref.lstrip("+").split(":")[-1].removeprefix("refs/heads/")
+    if ref in ("HEAD", "@"):
+        ref = branch
+    return ref in DEFAULT_BRANCHES
+
+
 def guard_reason(command, branch):
     """Why this shell command would integrate into the default branch, or '' if it wouldn't."""
     c = command or ""
     on_default = branch in DEFAULT_BRANCHES
     if re.search(r"\bgh\s+pr\s+merge\b", c):
         return "`gh pr merge` merges a pull request"
-    if on_default and re.search(r"\bgit\s+merge\b", c):
+    if on_default and re.search(_GIT + r"merge(?![-\w])", c):
         return f"`git merge` while on `{branch}` merges into the default branch"
-    for m in re.finditer(r"\bgit\s+push\b([^;&|\n]*)", c):
-        args = [a for a in m.group(1).split() if not a.startswith("-")]
-        refs = args[1:]  # after the remote
-        if any(re.fullmatch(rf"(?:[^:]*:)?(?:refs/heads/)?{_DEF}", r) for r in refs):
+    for m in re.finditer(_GIT + r"pull\b([^;&|\n]*)", c):
+        refs = [a for a in m.group(1).split() if not a.startswith("-")][1:]
+        if on_default and refs and not all(_hits_default(r, branch) for r in refs):
+            return f"`git pull` of another branch while on `{branch}` merges it into the default branch"
+    for m in re.finditer(_GIT + r"push\b([^;&|\n]*)", c):
+        words = m.group(1).split()
+        if "--all" in words or "--mirror" in words:
+            return "`git push --all/--mirror` pushes the default branch too"
+        refs = [a for a in words if not a.startswith("-")][1:]  # after the remote
+        if any(_hits_default(r, branch) for r in refs):
             return "`git push` to the default branch"
         if not refs and on_default:
             return f"`git push` while on `{branch}` pushes the default branch"
@@ -486,7 +550,7 @@ def on_bash(payload, env, store, cwd):
     state = store.load(cwd)
     if state["enabled"] != "on":
         return None
-    reason = guard_reason((payload.get("tool_input") or {}).get("command"), _git(cwd, "rev-parse", "--abbrev-ref", "HEAD"))
+    reason = guard_reason((payload.get("tool_input") or {}).get("command"), current_branch(cwd))
     if not reason:
         return None
     strict = state["level"] == "strict" and (state["phase"] is None or state["phase"] < 10)
@@ -535,7 +599,9 @@ def install_statusline(env):
         src = Path(__file__).resolve()
         if src != dst.resolve():
             dst.parent.mkdir(parents=True, exist_ok=True)
-            dst.write_bytes(src.read_bytes())
+            data = src.read_bytes()
+            if not dst.is_file() or dst.read_bytes() != data:
+                _atomic_write(dst, data)
     except Exception:
         pass
 
@@ -549,7 +615,12 @@ def on_prompt(payload, env, store, cwd):
             store.save(cwd, new)
         install_statusline(env)
         return output("UserPromptSubmit", text)
-    if engine_on(state) and state.get("gate_pending") is not None and is_approval(payload.get("prompt")):
+    if engine_on(state) and is_approval(payload.get("prompt")):
+        if state.get("gate_pending") is None:
+            return output("UserPromptSubmit",
+                          "wf: no gate is pending, so this did not move the phase. If the user is approving a "
+                          "gate, restate which gate in one line and end your message with its `[[gate P<n>]]` "
+                          "line, so their next approval moves the phase.")
         text = approve(state, env, cwd)
         store.save(cwd, state)
         return output("UserPromptSubmit", text)
@@ -577,7 +648,11 @@ HANDLERS = {
 def handle(event, payload, env):
     cwd = payload.get("cwd") or env.get("CLAUDE_PROJECT_DIR") or os.getcwd()
     fn = HANDLERS.get(event)
-    return fn(payload, env, Store(env), cwd) if fn else None
+    if not fn:
+        return None
+    store = Store(env)
+    with store.locked(cwd):
+        return fn(payload, env, store, cwd)
 
 
 def statusline(payload, env):
