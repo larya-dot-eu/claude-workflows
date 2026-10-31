@@ -233,7 +233,15 @@ def run_command(cmd, args, state, store, env, cwd):
         if args and args[0] in LEVELS:
             state["level"] = args[0]
         state["enabled"] = "on"
-        return state, f"{tell}workflow skin ON ({describe(state)}).\n\n" + skin_context(state, env, cwd)
+        guess = ""
+        if state["phase"] is None and state["level"] != "lite":
+            n, why = guess_phase(cwd)
+            if n is not None:
+                state.update(phase=n, injected=n)
+                guess = (f"\n\nNo saved phase for this branch on this machine; {why}. Ask the user: "
+                         f"\"Looks like Phase {n} ({PHASE_NAMES[n]}) — correct? (`/wf <n>` to change)\"")
+        return state, (f"{tell}workflow skin ON ({describe(state)})." + guess + "\n\n"
+                       + skin_context(state, env, cwd))
     if cmd == "resume":
         if state["enabled"] == "off":
             return None, tell + "the skin is off — use `/wf on`."
@@ -272,6 +280,181 @@ def run_command(cmd, args, state, store, env, cwd):
     return None, "Show the user: unknown /wf command. " + HELP
 
 
+
+# ---------------------------------------------------------------- phase engine
+
+GATE_RE = re.compile(r"^\s*\[\[gate P(\d{1,2})\]\]\s*$")
+APPROVE_RE = re.compile(
+    r"^(approved?|i approve|looks good|lgtm|proceed|go ahead|ok(ay)?|yes|yep|ship it|continue|"
+    r"sounds good|perfect|great|good)\b", re.I)
+VETO_RE = re.compile(r"\b(but|except|however|change|fix|instead|not|no|don'?t|wait|first|before|"
+                     r"why|how|what|explain|redo|rename|remove|add)\b|\?", re.I)
+
+
+def gate_from_message(msg):
+    """Phase n if the message's last non-empty line, outside code fences, is `[[gate Pn]]`."""
+    if not msg:
+        return None
+    fence, last = False, None
+    for line in msg.splitlines():
+        if line.lstrip().startswith("```"):
+            fence = not fence
+            last = None
+            continue
+        if line.strip():
+            last = None if fence else line
+    m = GATE_RE.match(last or "")
+    n = int(m.group(1)) if m else None
+    return n if n is not None and 0 <= n <= 10 else None
+
+
+def is_approval(text):
+    t = (text or "").strip()
+    if not t or len(t) > 80 or t.startswith("/"):
+        return False
+    return bool(APPROVE_RE.match(t)) and not VETO_RE.search(t)
+
+
+def enter_phase(state, n, env, cwd, lead):
+    """Move to phase n; include that phase's section unless it was the last one injected."""
+    state.update(phase=n, gate_pending=None)
+    text = lead
+    if state.get("injected") != n:
+        text += "\n\n" + phase_context(n, env, cwd)
+        state["injected"] = n
+    return text
+
+
+def engine_on(state):
+    return state["enabled"] == "on" and state["level"] != "lite"
+
+
+def on_stop(payload, env, store, cwd):
+    state = store.load(cwd)
+    if not engine_on(state):
+        return None
+    gate = gate_from_message(payload.get("last_assistant_message"))
+    if gate != state.get("gate_pending") or (gate is not None and state["phase"] != gate):
+        state["gate_pending"] = gate
+        if gate is not None:
+            state["phase"] = gate
+        store.save(cwd, state)
+    return None  # record only: never block
+
+
+def approve(state, env, cwd):
+    gate = state["gate_pending"]
+    if gate >= 10:
+        state.update(phase=None, gate_pending=None, injected=None)
+        return ("The user approved the Phase 10 gate. The workflow is complete for this feature. "
+                "Tell the user in one line; a new feature starts with brainstorming or `/wf new`.")
+    nxt = gate + 1
+    return enter_phase(state, nxt, env, cwd,
+                       f"The user approved the Phase {gate} gate. Continue with Phase {nxt} "
+                       f"({PHASE_NAMES[nxt]}) now, following its rules below.")
+
+
+# skill name (after "plugin:") -> handler(state, env, cwd) -> text or None
+def _skill_brainstorming(state, env, cwd):
+    if state["phase"] is not None and state["phase"] <= 3:
+        return None
+    return enter_phase(state, 0, env, cwd,
+                       "New feature (brainstorming started). Brainstorming covers Phases 0–3: confirm the "
+                       "tier first; its first message is the Phase 1 summary; state the Phase 2 exit answers "
+                       "before its approaches message; its design doc is the Phase 3 spec. End each phase's "
+                       "gate message with `[[gate P<n>]]`.")
+
+
+def _skill_writing_plans(state, env, cwd):
+    ph = state["phase"]
+    if ph is None or ph < 3:
+        return ("writing-plans was started, but the spec (Phase 3) is not approved yet. Stop and tell the "
+                "user; finish the spec and get its approval first.")
+    note = ("When writing-plans asks for an execution method: do not ask yet — Phase 4 checkpoint, "
+            "Phase 5 and Phase 6 come first; the method is chosen at the end of Phase 6.")
+    if ph in (3, 4):
+        return enter_phase(state, 4, env, cwd, "Entering Phase 4 (Plan). " + note)
+    return note
+
+
+def _skill_executor(state, env, cwd):
+    ph = state["phase"]
+    if ph is None or ph < 6:
+        return ("Plan execution was started, but Phase 5 (adversarial review) and Phase 6 (TDD planning) "
+                "are not done for this feature. Stop and ask the user before executing.")
+    note = ("Extra stop conditions: a previously passing test fails; a ruling would change the access "
+            "matrix, schema, a public interface or the scale design; a task needs a file outside the plan. "
+            "Before the workspace is deleted, copy the ledger's Ruling / parked / minor (deferred) lines into "
+            "the plan under `## Execution record`.")
+    if ph in (6, 7):
+        return enter_phase(state, 7, env, cwd, "Entering Phase 7 (TDD Build). " + note)
+    return note
+
+
+def _skill_finishing(state, env, cwd):
+    ph = state["phase"]
+    if ph is not None and ph >= 10:
+        return "Only the push-and-create-PR or keep option is allowed; never a merge option."
+    return ("Hold finishing-a-development-branch: Phases 8 (post-implementation review) and 9 (living docs) "
+            "come first and need the user's approval. After that, only the push-and-create-PR or keep "
+            "option is allowed; never a merge option.")
+
+
+def _skill_debugging(state, env, cwd):
+    return ("Bug fix: name the tier and get the user's confirmation, and move to a branch, before adding "
+            "any instrumentation or test. Re-check the tier once the root cause is found.")
+
+
+SKILLS = {
+    "brainstorming": _skill_brainstorming,
+    "writing-plans": _skill_writing_plans,
+    "subagent-driven-development": _skill_executor,
+    "executing-plans": _skill_executor,
+    "finishing-a-development-branch": _skill_finishing,
+    "systematic-debugging": _skill_debugging,
+}
+
+
+def on_skill(name, event, env, store, cwd):
+    fn = SKILLS.get((name or "").split(":")[-1])
+    if not fn:
+        return None
+    state = store.load(cwd)
+    if not engine_on(state):
+        return None
+    text = fn(state, env, cwd)
+    store.save(cwd, state)
+    return output(event, text)
+
+
+def on_pre_tool(payload, env, store, cwd):
+    if payload.get("tool_name") == "Skill":
+        return on_skill((payload.get("tool_input") or {}).get("skill"), "PreToolUse", env, store, cwd)
+    return None
+
+
+def on_expansion(payload, env, store, cwd):
+    return on_skill(payload.get("command_name"), "UserPromptExpansion", env, store, cwd)
+
+
+
+
+def guess_phase(cwd):
+    """Best guess of the phase from files in the repo: (phase, evidence) or (None, '')."""
+    root = Path(repo_root(cwd) or cwd)
+    def files(*dirs):
+        return [p for d in dirs for p in sorted((root / d).glob("*.md")) if p.is_file()]
+    plans, specs = files("docs/superpowers/plans", "docs/plans"), files("docs/superpowers/specs", "docs/specs")
+    for p in plans:
+        if "## Execution record" in p.read_text(errors="ignore"):
+            return 8, f"plan {p.relative_to(root)} has an Execution record"
+    if plans:
+        return 5, f"plan {plans[-1].relative_to(root)} exists"
+    if specs:
+        return 4, f"spec {specs[-1].relative_to(root)} exists"
+    return None, ""
+
+
 # ---------------------------------------------------------------- hook handlers
 
 def install_statusline(env):
@@ -295,6 +478,10 @@ def on_prompt(payload, env, store, cwd):
             store.save(cwd, new)
         install_statusline(env)
         return output("UserPromptSubmit", text)
+    if engine_on(state) and state.get("gate_pending") is not None and is_approval(payload.get("prompt")):
+        text = approve(state, env, cwd)
+        store.save(cwd, state)
+        return output("UserPromptSubmit", text)
     return None
 
 
@@ -309,6 +496,9 @@ def on_session_start(payload, env, store, cwd):
 HANDLERS = {
     "UserPromptSubmit": on_prompt,
     "SessionStart": on_session_start,
+    "Stop": on_stop,
+    "PreToolUse": on_pre_tool,
+    "UserPromptExpansion": on_expansion,
 }
 
 
