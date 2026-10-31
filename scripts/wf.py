@@ -240,7 +240,7 @@ def run_command(cmd, args, state, store, env, cwd):
                 state.update(phase=n, injected=n)
                 guess = (f"\n\nNo saved phase for this branch on this machine; {why}. Ask the user: "
                          f"\"Looks like Phase {n} ({PHASE_NAMES[n]}) — correct? (`/wf <n>` to change)\"")
-        return state, (f"{tell}workflow skin ON ({describe(state)})." + guess + "\n\n"
+        return state, (f"{tell}workflow skin ON ({describe(state)})." + guess + old_hooks_warning(cwd) + "\n\n"
                        + skin_context(state, env, cwd))
     if cmd == "resume":
         if state["enabled"] == "off":
@@ -428,6 +428,8 @@ def on_skill(name, event, env, store, cwd):
 
 
 def on_pre_tool(payload, env, store, cwd):
+    if payload.get("tool_name") == "Bash":
+        return on_bash(payload, env, store, cwd)
     if payload.get("tool_name") == "Skill":
         return on_skill((payload.get("tool_input") or {}).get("skill"), "PreToolUse", env, store, cwd)
     return None
@@ -453,6 +455,75 @@ def guess_phase(cwd):
     if specs:
         return 4, f"spec {specs[-1].relative_to(root)} exists"
     return None, ""
+
+
+
+# ---------------------------------------------------------------- guards
+
+DEFAULT_BRANCHES = ("main", "master")
+_DEF = r"(?:main|master)"
+
+
+def guard_reason(command, branch):
+    """Why this shell command would integrate into the default branch, or '' if it wouldn't."""
+    c = command or ""
+    on_default = branch in DEFAULT_BRANCHES
+    if re.search(r"\bgh\s+pr\s+merge\b", c):
+        return "`gh pr merge` merges a pull request"
+    if on_default and re.search(r"\bgit\s+merge\b", c):
+        return f"`git merge` while on `{branch}` merges into the default branch"
+    for m in re.finditer(r"\bgit\s+push\b([^;&|\n]*)", c):
+        args = [a for a in m.group(1).split() if not a.startswith("-")]
+        refs = args[1:]  # after the remote
+        if any(re.fullmatch(rf"(?:[^:]*:)?(?:refs/heads/)?{_DEF}", r) for r in refs):
+            return "`git push` to the default branch"
+        if not refs and on_default:
+            return f"`git push` while on `{branch}` pushes the default branch"
+    return ""
+
+
+def on_bash(payload, env, store, cwd):
+    state = store.load(cwd)
+    if state["enabled"] != "on":
+        return None
+    reason = guard_reason((payload.get("tool_input") or {}).get("command"), _git(cwd, "rev-parse", "--abbrev-ref", "HEAD"))
+    if not reason:
+        return None
+    strict = state["level"] == "strict" and (state["phase"] is None or state["phase"] < 10)
+    why = (f"Workflow merge guard: {reason}. Changes land through a PR, and merging is the last step of "
+           f"Phase 10 (after deploy + health check).")
+    if strict:
+        why += " Strict level blocks this before Phase 10; the user can `/wf 10` or `/wf standard` to allow it."
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                   "permissionDecision": "deny" if strict else "ask",
+                                   "permissionDecisionReason": why}}
+
+
+SUBAGENT_RULES = ("Workflow rules for this subagent: follow the plan's Global Constraints exactly (access-control "
+                  "matrix, scale target, reuse list, config rule, ownership map). Absence is not confirmation: an "
+                  "empty grep or a suite that never runs the changed path means unverified. Open every file before "
+                  "you cite it. Never claim done without a real run. If a previously passing test fails, stop and "
+                  "report it instead of working around it.")
+
+
+def on_subagent(payload, env, store, cwd):
+    state = store.load(cwd)
+    if state["enabled"] == "on" and state["level"] == "strict":
+        return output("SubagentStart", SUBAGENT_RULES)
+    return None
+
+
+def old_hooks_warning(cwd):
+    root = Path(repo_root(cwd) or cwd)
+    for name in ("settings.json", "settings.local.json"):
+        p = root / ".claude" / name
+        try:
+            if SPINE in p.read_text() or "[Workflow] phases in order" in p.read_text():
+                return (f"\n\nAlso tell the user: `{p.relative_to(root)}` still has the old manual workflow hooks, "
+                        "so the spine is loaded twice. Remove those two hooks; the wf plugin replaces them.")
+        except Exception:
+            pass
+    return ""
 
 
 # ---------------------------------------------------------------- hook handlers
@@ -499,6 +570,7 @@ HANDLERS = {
     "Stop": on_stop,
     "PreToolUse": on_pre_tool,
     "UserPromptExpansion": on_expansion,
+    "SubagentStart": on_subagent,
 }
 
 

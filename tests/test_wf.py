@@ -473,3 +473,80 @@ class TestPhaseGuess(unittest.TestCase):
     def test_plan_with_execution_record(self):
         phase, _ = self.guess_for({"docs/plans/2026-11-01-x-plan.md": "p\n## Execution record\n- Ruling: x"})
         self.assertEqual(phase, 8)
+
+
+# ================================================================ M3: guards
+
+class TestGuardRules(unittest.TestCase):
+    def test_flags_merges_into_default_branch(self):
+        for cmd, branch in [("git merge feat", "main"), ("cd app && git merge feat", "master"),
+                            ("git push origin main", "feat"), ("git push origin HEAD:main", "feat"),
+                            ("git push -f origin feat:master", "feat"), ("git push", "main"),
+                            ("gh pr merge 3 --squash", "feat")]:
+            self.assertTrue(wf.guard_reason(cmd, branch), (cmd, branch))
+
+    def test_allows_normal_work(self):
+        for cmd, branch in [("git merge main", "feat"), ("git push -u origin feat", "feat"),
+                            ("git status", "main"), ("gh pr create --fill", "feat"),
+                            ("git push origin feat-main-fix", "feat"), ("ls", "main")]:
+            self.assertFalse(wf.guard_reason(cmd, branch), (cmd, branch))
+
+
+class TestGuardHook(unittest.TestCase):
+    def setUp(self):
+        self.e = Env(branch="main")
+
+    def tearDown(self):
+        self.e.close()
+
+    def bash(self, cmd):
+        return self.e.run("PreToolUse", tool_name="Bash", tool_input={"command": cmd})
+
+    def decision(self, out):
+        return out["hookSpecificOutput"]["permissionDecision"] if out else None
+
+    def test_off_and_paused_do_nothing(self):
+        self.assertIsNone(self.bash("git merge feat"))
+        self.e.prompt("/wf on")
+        self.e.prompt("/wf pause")
+        self.assertIsNone(self.bash("git merge feat"))
+
+    def test_standard_and_lite_ask(self):
+        self.e.prompt("/wf on")
+        self.assertEqual(self.decision(self.bash("git merge feat")), "ask")
+        self.e.prompt("/wf lite")
+        self.assertEqual(self.decision(self.bash("git merge feat")), "ask")
+        self.assertIsNone(self.bash("git status"))
+
+    def test_strict_denies_until_phase_10(self):
+        self.e.prompt("/wf on strict")
+        out = self.bash("git merge feat")
+        self.assertEqual(self.decision(out), "deny")
+        self.assertIn("/wf", out["hookSpecificOutput"]["permissionDecisionReason"])
+        self.e.prompt("/wf 10")
+        self.assertEqual(self.decision(self.bash("git merge feat")), "ask")
+
+
+class TestSubagentAndDuplicates(unittest.TestCase):
+    def test_subagent_constraints_only_in_strict(self):
+        e = Env()
+        try:
+            e.prompt("/wf on")
+            self.assertIsNone(e.run("SubagentStart", agent_type="general-purpose"))
+            e.prompt("/wf strict")
+            out = e.run("SubagentStart", agent_type="general-purpose")
+            self.assertIn("Global Constraints", ctx(out))
+            self.assertEqual(out["hookSpecificOutput"]["hookEventName"], "SubagentStart")
+        finally:
+            e.close()
+
+    def test_warns_about_old_manual_hooks(self):
+        e = Env()
+        try:
+            (e.repo / ".claude").mkdir()
+            (e.repo / ".claude" / "settings.json").write_text(
+                '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"cat Claude-Workflows-Best-Practices-Compact.md"}]}]}}')
+            out = e.prompt("/wf on")
+            self.assertIn("twice", ctx(out))
+        finally:
+            e.close()
