@@ -135,7 +135,9 @@ off until you turn it on, a level you choose, a status line that shows where you
 message with `[[gate P3]]`. Reply *approved* / *looks good* / *proceed* and the skin moves exactly one
 phase and hands Claude only that phase's rules. Anything with *but*, *change*, a question mark, etc. is
 not an approval, and a turn that ends without the marker clears the pending gate — a side question
-can never be mistaken for approval. If a marker is ever missed, `/wf 4` puts you back on track.
+can never be mistaken for approval. If a marker is ever missed, `/wf 4` puts you back on track. Going *back* (e.g. Phase 5
+sends the plan back to Phase 4) is always your call: Claude recommends it, you type `/wf 4`; a
+marker for an earlier phase is treated as a recap and never erases your timeline.
 
 **What you see in the terminal** (shown to you only — none of it is sent to Claude, so it costs no context):
 
@@ -173,7 +175,8 @@ nothing is added to your project. On another machine, `/wf on` guesses the phase
 plan files and asks you to confirm (*"Looks like Phase 5 — correct?"*).
 
 **Your own rules.** If the project root has its own copy of the two workflow files, the skin uses
-those instead of the plugin's.
+those instead of the plugin's. Those files are sent to Claude as the workflow rules, so treat them like a `CLAUDE.md`: in a
+repo you didn't write (a fresh clone, a contributor's branch), read them before you `/wf on`.
 
 ## Without the plugin (manual setup)
 
