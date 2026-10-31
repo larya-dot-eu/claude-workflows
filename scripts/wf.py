@@ -525,8 +525,16 @@ def on_stop(payload, env, store, cwd):
     tl = state.setdefault("timeline", {})
     entry = dict(tl.get(str(gate), {}), found=found, total=total, missing=missing)
     tl[str(gate)] = entry
+    out = output("Stop", None, gate_line(gate, entry))
+    if (state["level"] == "strict" and missing and not entry.get("nudged")
+            and not payload.get("stop_hook_active")):
+        entry["nudged"] = True
+        out["decision"] = "block"
+        out["reason"] = (f"Workflow checklist for the Phase {gate} gate is incomplete. Missing: "
+                         f"{', '.join(missing)}. Add each one, or write it as 'N/A — <why>', then end the "
+                         f"message with `[[gate P{gate}]]` again. (This reminder comes once per gate.)")
     store.save(cwd, state)
-    return output("Stop", None, gate_line(gate, entry))
+    return out
 
 
 def approve(state, env, cwd):

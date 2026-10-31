@@ -789,3 +789,45 @@ class TestChecklist(EngineCase):
         self.assertRegex(wf.statusline({"cwd": str(self.e.repo)}, self.e.env), rf"\[WF P3 {pct}% · ")
         self.e.prompt("approved")
         self.assertIn(f"P3 ✓ {pct}%", shown(self.e.prompt("/wf status")))
+
+
+# ================================================================ F4: strict nudge
+
+class TestStrictNudge(EngineCase):
+    def gate3(self, msg="Behavior: x. Interfaces: y.\n[[gate P3]]", active=False):
+        return self.e.run("Stop", last_assistant_message=msg, stop_hook_active=active)
+
+    def test_strict_blocks_once_with_missing_list(self):
+        self.e.prompt("/wf strict")
+        self.e.prompt("/wf 3")
+        out = self.gate3()
+        self.assertEqual(out.get("decision"), "block")
+        self.assertIn("access-control matrix", out["reason"])
+        self.assertIn("N/A", out["reason"])
+        self.assertIn("[[gate P3]]", out["reason"])
+        self.assertIn("missing", shown(out))
+        again = self.gate3()                       # Claude ends at the gate again, still incomplete
+        self.assertNotIn("decision", again)
+        self.assertIn("missing", shown(again))
+
+    def test_respects_stop_hook_active(self):
+        self.e.prompt("/wf strict")
+        self.e.prompt("/wf 3")
+        self.assertNotIn("decision", self.gate3(active=True))
+
+    def test_standard_never_blocks(self):
+        self.e.prompt("/wf 3")
+        self.assertNotIn("decision", self.gate3())
+
+    def test_complete_gate_not_blocked(self):
+        self.e.prompt("/wf strict")
+        self.e.prompt("/wf 3")
+        self.assertNotIn("decision", self.gate3(FULL_SPEC + "\n[[gate P3]]"))
+
+    def test_loop_back_allows_a_new_nudge(self):
+        self.e.prompt("/wf strict")
+        self.e.prompt("/wf 3")
+        self.gate3()
+        self.e.prompt("approved")
+        self.e.prompt("/wf 3")
+        self.assertEqual(self.gate3().get("decision"), "block")
