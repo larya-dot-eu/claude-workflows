@@ -723,10 +723,69 @@ class TestTimeline(EngineCase):
         self.walk(0)
         self.stop("x\n[[gate P2]]")
         out = self.e.prompt("/wf status")
-        self.assertIn("P0 ✓ · P1 ⚠ skipped · P2", shown(out))
+        self.assertRegex(shown(out), r"P0 ✓( \d+%)? · P1 ⚠ skipped · P2")
 
     def test_statusline_shows_marks(self):
         self.e.prompt("/wf new")
         self.walk(0)
         self.walk(1)
         self.assertEqual(wf.statusline({"cwd": str(self.e.repo)}, self.e.env), "[WF P2 · ✓✓ · standard]")
+
+
+# ================================================================ F3: checklist %
+
+FULL_SPEC = """Behavior: subtract returns a-b. Interfaces: subtract(a, b) -> number. Edge cases: negatives,
+floats. Transactional integrity: N/A, no writes. Assumptions: callers pass numbers. Access-control
+matrix: no access boundaries. Expected scale: N/A, pure function. Reuse: follows add(). Presentation vs
+logic: N/A. Checkpoint: no conflicts with existing code, no unverified assumptions."""
+
+
+class TestChecklist(EngineCase):
+    def test_every_phase_has_a_checklist(self):
+        for n in range(0, 11):
+            self.assertGreaterEqual(len(wf.CHECKS[n]), 3, n)
+
+    def test_full_spec_scores_100(self):
+        found, total, missing = wf.score(3, FULL_SPEC)
+        self.assertEqual((found, missing), (total, []))
+
+    def test_missing_items_are_named(self):
+        text = FULL_SPEC.replace("Access-control\nmatrix: no access boundaries.", "").replace(
+            "Expected scale: N/A, pure function.", "")
+        found, total, missing = wf.score(3, text)
+        self.assertEqual(found, total - 2)
+        self.assertEqual(missing, ["access-control matrix", "expected scale"])
+
+    def test_gate_shows_score_and_missing(self):
+        self.e.prompt("/wf 3")
+        out = self.stop("Spec:\nBehavior: x. Interfaces: y. Edge cases: z.\n[[gate P3]]")
+        line = shown(out)
+        self.assertRegex(line, r"Gate P3 reached · checklist \d+/\d+ \(\d+%\) · missing: ")
+        self.assertIn("access-control matrix", line)
+
+    def test_spec_file_counts_for_phase_3(self):
+        d = self.e.repo / "docs/superpowers/specs"
+        d.mkdir(parents=True)
+        (d / "2026-11-01-sub-design.md").write_text(FULL_SPEC)
+        self.e.prompt("/wf 3")
+        out = self.stop("The spec is saved; please review.\n[[gate P3]]")
+        self.assertIn("all items ✓", shown(out))
+
+    def test_plan_file_counts_for_phase_4(self):
+        d = self.e.repo / "docs/superpowers/plans"
+        d.mkdir(parents=True)
+        (d / "plan.md").write_text("## Global Constraints\n... Ownership map ...\n")
+        self.e.prompt("/wf 4")
+        out = self.stop("Plan saved.\n[[gate P4]]")
+        self.assertNotIn("global constraints", shown(out).split("missing:")[-1])
+
+    def test_score_reaches_statusline_and_timeline(self):
+        self.e.prompt("/wf new")
+        self.stop("x\n[[gate P0]]")
+        self.e.prompt("approved")
+        self.e.prompt("/wf 3")
+        self.stop("Behavior: x. Interfaces: y.\n[[gate P3]]")
+        pct = wf.score_pct(self.e.state()["timeline"]["3"])
+        self.assertRegex(wf.statusline({"cwd": str(self.e.repo)}, self.e.env), rf"\[WF P3 {pct}% · ")
+        self.e.prompt("approved")
+        self.assertIn(f"P3 ✓ {pct}%", shown(self.e.prompt("/wf status")))

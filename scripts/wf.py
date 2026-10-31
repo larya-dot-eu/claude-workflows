@@ -338,6 +338,77 @@ def run_command(cmd, args, state, store, env, cwd):
 
 
 
+
+# ---------------------------------------------------------------- per-phase checklists
+# What each gate must cover, from Claude-Workflows-Best-Practices.md. A hit means the item is
+# present (or explicitly N/A) in Claude's gate message or the phase's spec/plan file — it measures
+# coverage, not quality. Reading the gate stays the user's job.
+
+CHECKS = {
+    0: [("tier named", r"\b(full|quick)\b[^.\n]{0,40}\btier|\btier\b[^.\n]{0,40}\b(full|quick)\b"),
+        ("CLAUDE.md loaded", r"claude\.md"),
+        ("ROADMAP.md checked", r"roadmap"),
+        ("touched code located", r"\b(file|module|code)s?\b")],
+    1: [("architecture", r"architect"), ("constraints", r"constraint"),
+        ("conventions", r"convention|pattern"), ("prior decisions", r"decision|decided")],
+    2: [("exact problem", r"problem"), ("constraints", r"constraint"),
+        ("what's different", r"differ|deviat"),
+        ("prior-solution search", r"prior solution|existing (code|implementation|function|component)|"
+                                  r"reuse candidate|already (exists|in the codebase)|none found")],
+    3: [("behavior", r"behaviou?r"), ("interfaces", r"interface|input|output|\bapi\b"),
+        ("edge cases", r"edge case|error state"), ("transactional integrity", r"transaction|atomic|eventual"),
+        ("assumptions", r"assumption"), ("access-control matrix", r"access[- \n]control|access boundar"),
+        ("expected scale", r"\bscale\b|req(uests)?/s|\brows\b"), ("reuse", r"\breuse|net-new"),
+        ("presentation vs logic", r"presentation|hardcod|\bconfig\b"),
+        ("codebase checkpoint", r"conflict|unverified")],
+    4: [("global constraints", r"global constraints"), ("ownership map", r"ownership map"),
+        ("exit state per step", r"exit state"), ("verification per step", r"verif"),
+        ("checkpoint Q1–Q3", r"independently testable|built in at each step|extract"),
+        ("checkpoint Q4 external deps", r"external dependenc"), ("checkpoint Q5 likely wrong", r"most likely wrong")],
+    5: [("intermediate states", r"intermediate state"), ("dependency graph", r"dependency graph"),
+        ("command dry-run", r"dry[- ]run"), ("design-shape pass", r"design[- ]shape"),
+        ("abuse-case pass", r"abuse|idor|authz|row[- ]level"), ("scale pass", r"scale pass|peak|×10|x10"),
+        ("reinvention/hardcode pass", r"reinvent|hardcod")],
+    6: [("isolated workspace", r"worktree|feature branch"), ("test matrix in tasks", r"\[(happy|sad|edge)\]|zombies"),
+        ("RED confirmed", r"\bred\b|fails? on (the )?assert"), ("execution method", r"subagent-driven|native|execution method")],
+    7: [("tests green", r"\d+ (passed|tests? pass)|all tests? (pass|green)|suite (is )?green"),
+        ("execution record", r"execution record"), ("no unplanned changes", r"unplanned|scope")],
+    8: [("plan vs reality", r"diverg"), ("CLAUDE.md updates", r"claude\.md"),
+        ("duplication / inlined config", r"duplicat|inlin"), ("ROADMAP.md", r"roadmap")],
+    9: [("work plan updated", r"work plan|plan (doc|file)"), ("CLAUDE.md updated", r"claude\.md"),
+        ("ROADMAP.md", r"roadmap")],
+    10: [("artifact boots locally", r"boot|/health|health ?check"), ("auth 401/403", r"\b40[13]\b"),
+         ("session cookies", r"set-cookie|httponly"), ("IDOR replay", r"idor|another user|user b\b"),
+         ("indexes (EXPLAIN)", r"\bexplain\b"), ("monitoring + alerting", r"alert|monitor"),
+         ("rollback target", r"rollback|roll back"), ("lands through a PR", r"pull request|\bpr\b")],
+}
+
+PHASE_FILES = {3: ("docs/superpowers/specs", "docs/specs"),
+               **{n: ("docs/superpowers/plans", "docs/plans") for n in (4, 5, 6, 7, 8, 9)}}
+
+
+def score(n, text):
+    """(found, total, missing labels) for phase n's checklist against `text`."""
+    items = CHECKS.get(n, [])
+    missing = [label for label, rx in items if not re.search(rx, text or "", re.I)]
+    return len(items) - len(missing), len(items), missing
+
+
+def phase_text(n, message, cwd):
+    """Claude's gate message plus the newest spec/plan file that belongs to phase n."""
+    root = Path(repo_root(cwd) or cwd)
+    files = [p for d in PHASE_FILES.get(n, ()) for p in (root / d).glob("*.md") if p.is_file()]
+    newest = max(files, key=lambda p: p.stat().st_mtime, default=None)
+    return (message or "") + ("\n" + newest.read_text(errors="ignore") if newest else "")
+
+
+def gate_line(n, entry):
+    if not entry.get("total"):
+        return f"Gate P{n} reached · waiting for your approval"
+    head = f"Gate P{n} reached · checklist {entry['found']}/{entry['total']} ({score_pct(entry)}%)"
+    return head + (f" · missing: {', '.join(entry['missing'])}" if entry["missing"] else " · all items ✓")
+
+
 # ---------------------------------------------------------------- phase engine
 
 GATE_RE = re.compile(r"^\s*\[\[gate P(\d{1,2})\]\]\s*$")
@@ -450,7 +521,12 @@ def on_stop(payload, env, store, cwd):
         store.save(cwd, state)
     if gate is None:
         return None
-    return output("Stop", None, f"Gate P{gate} reached · waiting for your approval")
+    found, total, missing = score(gate, phase_text(gate, payload.get("last_assistant_message"), cwd))
+    tl = state.setdefault("timeline", {})
+    entry = dict(tl.get(str(gate), {}), found=found, total=total, missing=missing)
+    tl[str(gate)] = entry
+    store.save(cwd, state)
+    return output("Stop", None, gate_line(gate, entry))
 
 
 def approve(state, env, cwd):
