@@ -1,0 +1,26 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unittest:
+    name: Python ${{ matrix.python }}
+    # 3.8 is the oldest Python the wf plugin supports (Ubuntu 20.04, Debian 11); 22.04 still ships it in setup-python.
+    runs-on: ${{ matrix.python == '3.8' && 'ubuntu-22.04' || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.8", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Run the wf plugin tests
+        run: python -m unittest discover -s tests -v

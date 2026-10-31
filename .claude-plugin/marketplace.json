@@ -1,0 +1,13 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "claude-workflows",
+  "owner": { "name": "larya-dot-eu", "url": "https://github.com/larya-dot-eu" },
+  "plugins": [
+    {
+      "name": "wf",
+      "description": "Claude-Workflows as an invisible skin: /wf on|off|pause, levels, automatic phases.",
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}

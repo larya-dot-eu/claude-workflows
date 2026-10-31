@@ -3,7 +3,7 @@
 A single, battle-tested process file for using an AI coding agent (Claude Code, Cursor, etc.) on real
 features without shipping self-inflicted outages or security holes.
 
-**Version:** v1.3.0 (Superpowers v7.0.1 fixes) — previous: [v1.2.0](https://github.com/larya-dot-eu/claude-workflows/releases/tag/v1.2.0) — see [Releases](https://github.com/larya-dot-eu/claude-workflows/releases) for changelog.
+**Version:** v2.0.0 — the workflow as an invisible Claude Code plugin (`/wf on`). Previous: [v1.2.0](https://github.com/larya-dot-eu/claude-workflows/releases/tag/v1.2.0) — see [Releases](https://github.com/larya-dot-eu/claude-workflows/releases) for changelog.
 
 **→ [`Claude-Workflows-Best-Practices.md`](./Claude-Workflows-Best-Practices.md)**
 
@@ -69,7 +69,7 @@ trivial.
 
 ## Requirements
 
-**Required:** an AI coding agent that reads Markdown and follows instructions — [Claude Code](https://claude.com/product/claude-code) is the reference target (works in Cursor and similar too). Nothing to install; the workflow is plain Markdown you load into context.
+**Required:** an AI coding agent that reads Markdown and follows instructions — [Claude Code](https://claude.com/product/claude-code) is the reference target (works in Cursor and similar too). The workflow itself is plain Markdown. On Claude Code, the optional `wf` plugin (below) loads it for you; it needs only `python3` and `git`.
 
 **Optional stack (what the author runs).** None of these are required — the workflow is tool-agnostic and only cites a couple of them as examples. They each make a phase smoother:
 
@@ -94,7 +94,99 @@ Without them you run the workflow by hand — the gates and checklists are the s
 
 The compact file is enough to hold the discipline; the full file is enough to execute it.
 
-## How to use it
+## The `wf` plugin — the workflow as an invisible skin (recommended)
+
+Instead of prompting *"read Claude-Workflows-Best-Practices.md and let's do phase 4"* every time, switch
+the skin on once and just answer the gates. It works like [ponytail](https://github.com/DietrichGebert/ponytail):
+off until you turn it on, a level you choose, a status line that shows where you are.
+
+**Install — once per machine** (Linux; needs `python3` and `git`, nothing else):
+
+```
+/plugin marketplace add larya-dot-eu/claude-workflows
+```
+```
+/plugin install wf@claude-workflows
+```
+
+(Send them as two separate prompts.) Update later with `claude plugin update wf@claude-workflows`.
+
+**Use it**
+
+| Command | What it does |
+|---|---|
+| `/wf on` · `/wf on strict` | Switch the skin on for this project + branch (default level, or the one you name) |
+| `/wf pause` · `/wf resume` | Go silent but remember the phase · continue where you paused |
+| `/wf off` | Fully off, phase forgotten |
+| `/wf lite` · `/wf standard` · `/wf strict` | Change level (switches on if off) |
+| `/wf default strict` | Default level for new projects on this machine |
+| `/wf status` · `/wf 5` · `/wf new` | Where am I · jump to a phase (loop-backs) · start a new feature |
+| `/wf dirs <spec> <plan>` | Your own spec/plan folders, if they aren't `docs/superpowers/specs|plans` or `docs/specs|plans` (inside a worktree the main checkout is searched too) |
+| `/wf statusline` | Prints the one line to add to `~/.claude/settings.json` to see `[WF P4 · standard]` |
+
+**Levels**
+
+| Level | What Claude gets | Context cost |
+|---|---|---|
+| `lite` | The "Every phase" rules only (absence ≠ confirmation, evidence before done). No phases. Merge guard asks. | ~150 tokens once |
+| `standard` | Compact spine + automatic phases: each phase's section from the full doc only when you enter it. Superpowers-aware. Merge guard asks. | ~1.3k once + one section per phase |
+| `strict` | Standard + Phase 5 always by a fresh subagent, Quick tier always confirmed, constraints injected into every subagent, merges blocked before Phase 10. | same + a few lines per subagent |
+
+**How phases move — without you prompting them.** When Claude reaches an exit gate it ends its
+message with `[[gate P3]]`. Reply *approved* / *looks good* / *proceed* and the skin moves exactly one
+phase and hands Claude only that phase's rules. Anything with *but*, *change*, a question mark, etc. is
+not an approval, and a turn that ends without the marker clears the pending gate — a side question
+can never be mistaken for approval. If a marker is ever missed, `/wf 4` puts you back on track. Going *back* (e.g. Phase 5
+sends the plan back to Phase 4) is always your call: Claude recommends it, you type `/wf 4`; a
+marker for an earlier phase is treated as a recap and never erases your timeline.
+
+**What you see in the terminal** (shown to you only — none of it is sent to Claude, so it costs no context):
+
+```
+WF ▸ brainstorming started → Phase 0 (Tier + Prereqs)
+WF ▸ Gate P1 approved → Phase 2 (Explore)
+WF ▸ Gate P3 reached · checklist 7/10 (70%) · missing: access-control matrix, expected scale · not in file: reuse
+WF ▸ ⚠ writing-plans — spec (Phase 3) is not approved yet
+```
+
+- **Checklist %** — every gate has a checklist taken from the full doc. Claude lists each item on its own
+  line (`- expected scale: §4 of the spec` or `- expected scale: N/A — pure function`). Only real answers
+  count: *missing*, *TBD*, *left out*, *partially* don't. For the spec (P3) and plan (P4, P6) the hook also
+  checks the file: an item Claude calls covered that isn't in the file shows as *not in file*. It measures
+  **coverage, not quality** — reading the gate is still your job.
+- **Timeline** — `/wf status` shows `P0 ✓ · P1 ✓ · P2 ⚠ skipped · P3 70% (gate)`. A phase left without an
+  approved gate (Claude jumping ahead, a skill starting early) is marked *skipped*, so you can see whether
+  brainstorming really went through Phases 1, 2 and 3.
+- **Status line** — `[WF P3 70% · ✓✓⚠ · standard]` (current phase, its checklist %, earlier phases).
+- **strict** — when a gate has missing items, Claude gets one extra turn to do them (or mark them N/A with a
+  reason) and ends at the gate again. Once per gate; never while Claude is asking you a question.
+
+**With Superpowers.** When the skin is on, the skills drive the phases: `brainstorming` starts a feature
+at the tier check, `writing-plans` enters Phase 4 (and is told not to ask for an execution method yet),
+`subagent-driven-development` / `executing-plans` enter Phase 7 — or warn and stop if Phases 5–6
+haven't happened — and `finishing-a-development-branch` is held until Phases 8–9 are approved. Keep
+the override block from the full doc's *Running on Superpowers* section in your `CLAUDE.md`:
+Superpowers only guarantees that `CLAUDE.md` outranks its skills.
+
+**Merge guard.** While the skin is on, `git merge`, `git commit` or `git pull <other branch>` on main/master,
+`git push` to main/master and `gh pr merge` ask you first (`strict`: blocked until Phase 10). It follows
+branch switches inside one command (`git checkout main && git merge feat`), so Superpowers'
+*merge locally* option is caught too.
+
+**Branches and worktrees.** When the workflow moves to a new branch or worktree (Phase 6, the Quick
+tier, a bug fix), the skin follows it — you see `WF ▸ branch changed main → feat-x · skin follows`.
+Going back to main is the same feature (still merge-guarded). To start a *separate* feature on a
+branch instead, type `/wf new` there.
+
+**Several machines.** The phase is remembered on the machine you're using, per repo and branch —
+nothing is added to your project. On another machine, `/wf on` guesses the phase from your spec and
+plan files and asks you to confirm (*"Looks like Phase 5 — correct?"*).
+
+**Your own rules.** If the project root has its own copy of the two workflow files, the skin uses
+those instead of the plugin's. Those files are sent to Claude as the workflow rules, so treat them like a `CLAUDE.md`: in a
+repo you didn't write (a fresh clone, a contributor's branch), read them before you `/wf on`.
+
+## Without the plugin (manual setup)
 
 **Shortcut — let Claude set it up for you.** Open Claude Code in your project and paste:
 
@@ -138,9 +230,10 @@ whole workflow into ceremony. The minimum look per gate:
 - **Phase 10 (deploy):** demand pasted evidence — the actual `401` response, the actual `Set-Cookie`
   header, the actual `EXPLAIN` output. "Verified ✓" without output is a claim, not a result.
 
-## Optional: enforce the spine with hooks (no plugin needed)
+## Optional: manual hooks (only without the plugin)
 
-The workflow is instructions, and instructions can drift on long sessions. Two copy-paste
+Using the `wf` plugin? Skip this section — and remove these hooks if you added them earlier, or the
+spine loads twice (`/wf on` warns you). The workflow is instructions, and instructions can drift on long sessions. Two copy-paste
 [Claude Code hooks](https://docs.claude.com/en/docs/claude-code/hooks) harden it. Create
 `.claude/settings.json` **in your own project** (not in a clone of this repo — hooks are per-project
 config, and once set they fire in every session of that project; commit the file and your whole team

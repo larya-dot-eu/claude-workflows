@@ -4,3 +4,4 @@ ROADMAP.md
 docs/*
 answer1.md
 answer2.md
+__pycache__/
