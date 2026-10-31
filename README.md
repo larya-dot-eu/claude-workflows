@@ -3,7 +3,7 @@
 A single, battle-tested process file for using an AI coding agent (Claude Code, Cursor, etc.) on real
 features without shipping self-inflicted outages or security holes.
 
-**Version:** [v1.2.0](https://github.com/larya-dot-eu/claude-workflows/releases/tag/v1.2.0) — see [Releases](https://github.com/larya-dot-eu/claude-workflows/releases) for changelog.
+**Version:** v1.3.0 (Superpowers v7.0.1 adapter) — previous: [v1.2.0](https://github.com/larya-dot-eu/claude-workflows/releases/tag/v1.2.0) — see [Releases](https://github.com/larya-dot-eu/claude-workflows/releases) for changelog.
 
 **→ [`Claude-Workflows-Best-Practices.md`](./Claude-Workflows-Best-Practices.md)**
 
@@ -76,14 +76,14 @@ trivial.
 | Tool | Adds | Used in |
 |------|------|---------|
 | [gstack](https://github.com/garrytan/gstack) | Planning, review, and ship/deploy skills (`/spec`, `/ship`, `/review`) | Phases 3–4, 7, 10 |
-| [superpowers](https://github.com/obra/superpowers) | Default skill for exploration (`brainstorming`), planning (`writing-plans`), workspace isolation (`using-git-worktrees`), and TDD + plan-execution (`executing-plans`, `subagent-driven-development`, `test-driven-development`) | Phases 2, 4, 6–7 |
+| [superpowers](https://github.com/obra/superpowers) | Default skill for exploration (`brainstorming`), planning (`writing-plans`), workspace isolation (`using-git-worktrees`), and TDD + plan-execution (`subagent-driven-development`, `executing-plans`, `test-driven-development`), integration (`finishing-a-development-branch`). Checked against **v7.0.1** — see [`Superpowers-Adapter.md`](./Superpowers-Adapter.md) | Phases 1–4, 6–8, 10 |
 | [context7](https://github.com/upstash/context7) | Live, version-correct library docs via MCP — backs "open the source before you cite it" | Phases 1–7 |
 | [ponytail](https://github.com/DietrichGebert/ponytail) | Laziest-solution-that-works discipline — fights over-engineering during implementation | Phase 7 |
 | [caveman](https://github.com/JuliusBrussee/caveman) *(optional)* | Terse, token-light output; also the style of the compact spine file | Any phase |
 
 Without them you run the workflow by hand — the gates and checklists are the same. The doc's example paths (`docs/specs/`, `docs/plans/`) and tool names assume nothing; swap in your own.
 
-## Two files
+## Three files
 
 - **[`Claude-Workflows-Best-Practices-Compact.md`](./Claude-Workflows-Best-Practices-Compact.md)** — the always-on spine: phase order,
   every exit gate, and both deploy-gate checklists in keyword form. Small enough to keep loaded all
@@ -91,6 +91,12 @@ Without them you run the workflow by hand — the gates and checklists are the s
 - **[`Claude-Workflows-Best-Practices.md`](./Claude-Workflows-Best-Practices.md)** — the full reference:
   rationale, output formats, and the complete checklists. Read one section at a time, on demand, when you
   enter a phase.
+
+- **[`Superpowers-Adapter.md`](./Superpowers-Adapter.md)** — only if you run [Superpowers](https://github.com/obra/superpowers).
+  Its skills hand off to each other on their own (`brainstorming` → `writing-plans` → executor →
+  `finishing-a-development-branch`), and each handoff skips at least one gate here. The adapter maps
+  phase ↔ skill, lists the 12 breaks found in v7.0.1 with what/where/how/when, and has a block to paste
+  into your project's `CLAUDE.md` — Superpowers itself says user instructions outrank skills.
 
 The compact file is enough to hold the discipline; the full file is enough to execute it.
 
@@ -101,7 +107,9 @@ The compact file is enough to hold the discipline; the full file is enough to ex
 > Fetch `Claude-Workflows-Best-Practices.md` and `Claude-Workflows-Best-Practices-Compact.md` from
 > https://github.com/larya-dot-eu/claude-workflows into the project root, then add the two hooks from
 > that repo's README to this project's `.claude/settings.json` (merge with existing settings; the hook
-> paths already point at the project root). Don't change anything else.
+> paths already point at the project root). If this project uses Superpowers, also fetch
+> `Superpowers-Adapter.md`, append its section 1 block to `CLAUDE.md`, and ask me which spec/plan
+> storage option to fill in. Don't change anything else.
 
 Restart the session afterwards and approve the hooks when Claude Code asks.
 
@@ -169,7 +177,7 @@ gets them). Adjust the `cat` path to wherever you put the compact file:
 }
 ```
 
-- **SessionStart** injects the compact spine (~950 tokens, once, then prompt-cached) — and re-fires after
+- **SessionStart** injects the compact spine (~1,900 tokens, once, then prompt-cached) — and re-fires after
   `/clear` and after auto-compaction, which is exactly when injected context would otherwise be lost. The
   full workflow logic is always present without ever repeating it per prompt.
 - **UserPromptSubmit** re-pins only the four drift-prone rules (~20 tokens per prompt): phase order, no
