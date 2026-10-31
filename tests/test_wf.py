@@ -518,6 +518,11 @@ class TestGuardHook(unittest.TestCase):
         self.assertEqual(self.decision(self.bash("git merge feat")), "ask")
         self.assertIsNone(self.bash("git status"))
 
+    def test_push_to_main_is_guarded_through_the_hook(self):
+        self.e.prompt("/wf on strict")
+        self.assertEqual(self.decision(self.bash("git push origin refs/heads/main")), "deny")
+        self.assertEqual(self.decision(self.bash("git push origin HEAD")), "deny")
+
     def test_strict_denies_until_phase_10(self):
         self.e.prompt("/wf on strict")
         out = self.bash("git merge feat")

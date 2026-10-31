@@ -753,7 +753,9 @@ _GIT = r"\bgit(?:\s+-(?:C|c)\s+\S+)*\s+"
 
 
 def _hits_default(ref, branch):
-    ref = ref.lstrip("+").split(":")[-1].removeprefix("refs/heads/")
+    ref = ref.lstrip("+").split(":")[-1]
+    if ref.startswith("refs/heads/"):  # (str.removeprefix needs Python 3.9; keep 3.8 working)
+        ref = ref[len("refs/heads/"):]
     if ref in ("HEAD", "@"):
         ref = branch
     return ref in DEFAULT_BRANCHES
