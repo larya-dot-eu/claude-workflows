@@ -145,7 +145,7 @@ class Store:
 
     def blank(self):
         return {"enabled": "off", "level": self.default_level(), "phase": None,
-                "gate_pending": None, "injected": None}
+                "gate_pending": None, "injected": None, "timeline": {}}
 
     def load(self, cwd):
         s = self.blank()
@@ -203,7 +203,9 @@ def describe(state):
 
 
 def show_status(state):
-    return describe(state).replace(", level ", " · ").replace(", ", " · ")
+    line = describe(state).replace(", level ", " · ").replace(", ", " · ")
+    tl = timeline_text(state) if state["enabled"] != "off" and state["phase"] is not None else ""
+    return line + (f"\n   {tl}" if tl and (state.get("timeline") or {}) else "")
 
 
 def skin_context(state, env, cwd, with_phase=True, budget=LIMIT):
@@ -311,7 +313,8 @@ def run_command(cmd, args, state, store, env, cwd):
         store.set_default_level(args[0])
         return None, f"{tell}default level for new projects on this machine is now {args[0]}."
     if cmd == "status":
-        return None, f"{tell}workflow skin {describe(state)}."
+        tl = timeline_text(state) if state["phase"] is not None else ""
+        return None, f"{tell}workflow skin {describe(state)}." + (f" Timeline: {tl}." if tl else "")
     if cmd == "statusline":
         return None, "Show the user this, verbatim:\n\n" + statusline_snippet(env)
     if cmd == "phase":
@@ -320,13 +323,15 @@ def run_command(cmd, args, state, store, env, cwd):
             return None, tell + "phases are 0–10. " + HELP
         if state["enabled"] == "off":
             state["enabled"] = "on"
-        state.update(phase=n, gate_pending=None, injected=n)
+        move_to(state, n)
+        state.update(gate_pending=None, injected=n)
         lead = f"{tell}moved to Phase {n} ({PHASE_NAMES[n]}).\n\n"
         return state, lead + skin_context(state, env, cwd, budget=LIMIT - len(lead))
     if cmd == "new":
         if state["enabled"] == "off":
             state["enabled"] = "on"
-        state.update(phase=0, gate_pending=None, injected=0)
+        new_feature(state)
+        state.update(phase=0, injected=0)
         lead = f"{tell}new feature — starting at the tier check.\n\n"
         return state, lead + skin_context(state, env, cwd, budget=LIMIT - len(lead))
     return None, "Show the user: unknown /wf command. " + HELP
@@ -369,9 +374,59 @@ def is_approval(text):
     return bool(APPROVE_RE.match(t)) and not VETO_RE.search(HARMLESS_NO.sub("", t))
 
 
+def move_to(state, n):
+    """Set the phase and keep the timeline honest: phases left without an approved gate are
+    'skipped'; going back (a loop-back) forgets everything from the target phase on."""
+    old, tl = state["phase"], state.setdefault("timeline", {})
+    if old is not None and n is not None:
+        if n > old:
+            for k in range(old, n):
+                entry = tl.get(str(k), {})
+                if entry.get("status") != "done":
+                    tl[str(k)] = dict(entry, status="skipped")
+        elif n < old:
+            for k in [k for k in tl if int(k) >= n]:
+                del tl[k]
+    state["phase"] = n
+
+
+def new_feature(state):
+    state.update(phase=None, gate_pending=None, injected=None, timeline={})
+
+
+def timeline_marks(state):
+    """'✓✓⚠' for the phases before the current one ('' when nothing is recorded)."""
+    tl, ph = state.get("timeline") or {}, state["phase"]
+    if not tl or ph is None:
+        return ""
+    sym = {"done": "✓", "skipped": "⚠"}
+    return "".join(sym.get(tl.get(str(k), {}).get("status"), "·") for k in range(0, ph))
+
+
+def score_pct(entry):
+    return round(100 * entry["found"] / entry["total"]) if entry.get("total") else None
+
+
+def timeline_text(state):
+    tl, ph = state.get("timeline") or {}, state["phase"]
+    parts = []
+    for k in range(0, 11):
+        e = tl.get(str(k), {})
+        pct = score_pct(e)
+        if k == ph:
+            parts.append(f"P{k} " + (f"{pct}% (gate)" if pct is not None and state.get("gate_pending") == k
+                                     else "now"))
+        elif e.get("status") == "done":
+            parts.append(f"P{k} ✓" + (f" {pct}%" if pct is not None and pct < 100 else ""))
+        elif e.get("status") == "skipped":
+            parts.append(f"P{k} ⚠ skipped")
+    return " · ".join(parts)
+
+
 def enter_phase(state, n, env, cwd, lead):
     """Move to phase n; include that phase's section unless it was the last one injected."""
-    state.update(phase=n, gate_pending=None)
+    move_to(state, n)
+    state["gate_pending"] = None
     text = lead
     if state.get("injected") != n:
         text += "\n\n" + phase_context(n, env, cwd)
@@ -389,9 +444,9 @@ def on_stop(payload, env, store, cwd):
         return None
     gate = gate_from_message(payload.get("last_assistant_message"))
     if gate != state.get("gate_pending") or (gate is not None and state["phase"] != gate):
+        if gate is not None and state["phase"] != gate:
+            move_to(state, gate)
         state["gate_pending"] = gate
-        if gate is not None:
-            state["phase"] = gate
         store.save(cwd, state)
     if gate is None:
         return None
@@ -400,6 +455,8 @@ def on_stop(payload, env, store, cwd):
 
 def approve(state, env, cwd):
     gate = state["gate_pending"]
+    tl = state.setdefault("timeline", {})
+    tl[str(gate)] = dict(tl.get(str(gate), {}), status="done")
     if gate >= 10:
         state.update(phase=None, gate_pending=None, injected=None, completed_at=time.time())
         return ("The user approved the Phase 10 gate. The workflow is complete for this feature. "
@@ -414,6 +471,7 @@ def approve(state, env, cwd):
 def _skill_brainstorming(state, env, cwd):
     if state["phase"] is not None and state["phase"] <= 3:
         return None
+    new_feature(state)
     return enter_phase(state, 0, env, cwd,
                        "New feature (brainstorming started). Brainstorming covers Phases 0–3: confirm the "
                        "tier first; its first message is the Phase 1 summary; state the Phase 2 exit answers "
@@ -697,7 +755,11 @@ def statusline(payload, env):
     ph = "–" if state["phase"] is None else state["phase"]
     if state["enabled"] == "paused":
         return f"[WF ⏸ P{ph}]"
-    return f"[WF P{ph} · {state['level']}]"
+    entry = (state.get("timeline") or {}).get(str(state["phase"]), {})
+    pct = score_pct(entry) if state.get("gate_pending") == state["phase"] else None
+    head = f"P{ph}" + (f" {pct}%" if pct is not None else "")
+    marks = timeline_marks(state)
+    return "[WF " + " · ".join(x for x in (head, marks, state["level"]) if x) + "]"
 
 
 def main(argv):

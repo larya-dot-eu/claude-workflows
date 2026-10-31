@@ -673,3 +673,60 @@ class TestVisibleLines(EngineCase):
         self.e.prompt("/wf off")
         self.assertIsNone(self.stop("x\n[[gate P3]]"))
         self.assertIsNone(self.skill("superpowers:brainstorming"))
+
+
+# ================================================================ F2: timeline
+
+class TestTimeline(EngineCase):
+    def walk(self, n):
+        self.stop(f"x\n[[gate P{n}]]")
+        self.e.prompt("approved")
+
+    def marks(self):
+        return wf.timeline_marks(self.e.state())
+
+    def test_approved_gates_are_done(self):
+        self.e.prompt("/wf new")
+        self.walk(0)
+        self.walk(1)
+        self.assertEqual(self.marks(), "✓✓")
+        self.assertEqual(self.e.state()["phase"], 2)
+
+    def test_jumping_ahead_marks_skipped(self):
+        self.e.prompt("/wf new")
+        self.walk(0)
+        self.stop("design doc\n[[gate P3]]")      # Claude jumped from Phase 1 to the P3 gate
+        self.assertEqual(self.marks(), "✓⚠⚠")
+
+    def test_skill_jump_marks_skipped(self):
+        self.e.prompt("/wf 6")                     # from nothing: no history to mark
+        self.e.prompt("/wf 5")                     # loop back
+        self.e.prompt("/wf 6")
+        self.skill("superpowers:executing-plans")  # 6 → 7 without the P6 gate
+        self.assertEqual(wf.timeline_marks(self.e.state())[-1], "⚠")
+
+    def test_loop_back_forgets_later_phases(self):
+        self.e.prompt("/wf new")
+        for n in range(0, 4):
+            self.walk(n)
+        self.e.prompt("/wf 2")
+        self.assertEqual(self.marks(), "✓✓")
+
+    def test_new_feature_resets_timeline(self):
+        self.e.prompt("/wf new")
+        self.walk(0)
+        self.e.prompt("/wf new")
+        self.assertEqual(self.marks(), "")
+
+    def test_status_shows_timeline(self):
+        self.e.prompt("/wf new")
+        self.walk(0)
+        self.stop("x\n[[gate P2]]")
+        out = self.e.prompt("/wf status")
+        self.assertIn("P0 ✓ · P1 ⚠ skipped · P2", shown(out))
+
+    def test_statusline_shows_marks(self):
+        self.e.prompt("/wf new")
+        self.walk(0)
+        self.walk(1)
+        self.assertEqual(wf.statusline({"cwd": str(self.e.repo)}, self.e.env), "[WF P2 · ✓✓ · standard]")
