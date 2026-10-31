@@ -1228,3 +1228,13 @@ class TestSkillFile(unittest.TestCase):
     def test_wf_skill_is_user_only(self):
         front = (ROOT / "skills/wf/SKILL.md").read_text().split("---")[1]
         self.assertIn("disable-model-invocation: true", front)
+
+
+class TestExecutorReminderMatchesDocs(EngineCase):
+    def test_lists_every_ledger_line_the_docs_require(self):
+        self.e.prompt("/wf 6")
+        text = ctx(self.skill("superpowers:executing-plans"))
+        for item in ("Ruling", "parked", "minor (deferred)", "no reachable spec"):
+            self.assertIn(item, text)
+        doc = (ROOT / "Claude-Workflows-Best-Practices.md").read_text()
+        self.assertIn('"no reachable spec"', doc)

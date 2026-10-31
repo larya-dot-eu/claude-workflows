@@ -798,8 +798,8 @@ def _skill_executor(state, env, cwd):
                 "are not done for this feature. Stop and ask the user before executing.")
     note = ("Extra stop conditions: a previously passing test fails; a ruling would change the access "
             "matrix, schema, a public interface or the scale design; a task needs a file outside the plan. "
-            "Before the workspace is deleted, copy the ledger's Ruling / parked / minor (deferred) lines into "
-            "the plan under `## Execution record`.")
+            "Before the workspace is deleted, copy the ledger's Ruling / parked / minor (deferred) / \"no reachable "
+            "spec\" lines into the plan under `## Execution record`.")
     if ph in (6, 7):
         return enter_phase(state, 7, env, cwd, "Entering Phase 7 (TDD Build). " + note)
     return note
