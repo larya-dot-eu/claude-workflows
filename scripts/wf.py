@@ -360,8 +360,6 @@ def run_command(cmd, args, state, store, env, cwd):
     return None, "Show the user: unknown /wf command. " + HELP
 
 
-
-
 # ---------------------------------------------------------------- per-phase checklists
 # What each gate must cover, from Claude-Workflows-Best-Practices.md. A hit means the item is
 # present (or explicitly N/A) in Claude's gate message or the phase's spec/plan file — it measures
@@ -751,8 +749,6 @@ def on_expansion(payload, env, store, cwd):
     return on_skill(payload.get("command_name"), "UserPromptExpansion", env, store, cwd)
 
 
-
-
 def guess_phase(cwd, since=0):
     """Best guess of the phase from spec/plan files changed after `since` (a finished feature's
     files don't count): (phase, evidence) or (None, '')."""
@@ -771,13 +767,9 @@ def guess_phase(cwd, since=0):
     return None, ""
 
 
-
 # ---------------------------------------------------------------- guards
 
 DEFAULT_BRANCHES = ("main", "master")
-_DEF = r"(?:main|master)"
-
-
 _GIT = r"\bgit(?:\s+-(?:C|c)\s+\S+)*\s+"
 
 
