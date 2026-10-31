@@ -6,7 +6,7 @@
 >
 > **This is the full reference.** For everyday use, keep [`Claude-Workflows-Best-Practices-Compact.md`](./Claude-Workflows-Best-Practices-Compact.md) loaded as the always-on spine and read the matching section here when you enter a phase or need a full checklist — that keeps token cost and drift down on long sessions.
 >
-> **Running on Superpowers?** Superpowers skills hand off to each other on their own, and several of those handoffs skip a gate below. [`Superpowers-Adapter.md`](./Superpowers-Adapter.md) maps each phase to its skill, lists every skipped gate, and gives a block to paste into your project's `CLAUDE.md` (user instructions outrank skills). The *Superpowers:* notes in each phase below are the short form.
+> **Running on Superpowers?** Its skills hand off to each other on their own, and several of those handoffs skip a gate below. The *Superpowers:* notes in each phase say where; [Running on Superpowers](#running-on-superpowers-checked-against-v701) at the end collects them as one list you can paste into `CLAUDE.md`.
 >
 > **Sync rule:** this file and the compact spine are one spec in two forms. Any change to phases, gates, or checklists must land in both files in the same commit — a commit touching only one of them is the drift signal to look for in review.
 
@@ -432,6 +432,29 @@ Verification is not just testing. Implementation passing tests is NOT done. A de
 - **Honor the active skill's checklist — don't override process steps for "speed."** If a skill says create todos / track tasks, do it. The scaffolding exists to keep both you and the user oriented; skipping it loses visibility and drops threads.
 - **Open every file you cite before writing code or tests against it.** Never reference a fixture, helper, function, or path you have not actually read — assumed interfaces produce plans that fail on contact.
 - **Verify before declaring readiness.** "Ready to test" / "done" / "should work" are claims; each needs evidence (a real run, a real response, a confirmed health check) before it leaves. The failures in this project clustered exactly where readiness was declared ahead of verification.
+
+---
+
+## Running on Superpowers (checked against v7.0.1)
+
+[Superpowers](https://github.com/obra/superpowers) chains `brainstorming` → `writing-plans` → `subagent-driven-development` / `executing-plans` → `finishing-a-development-branch`, and each handoff skips at least one gate in this file. `using-superpowers` itself says user instructions (`CLAUDE.md`) outrank skills, so paste this list into your project's `CLAUDE.md` — it is the only part of this section that needs to be loaded every session:
+
+```markdown
+## Workflow overrides for Superpowers
+Where a Superpowers skill and this list disagree, this list wins.
+- Name the tier and get my confirmation before any change — including "quick, clear tasks", "just dive in", bug fixes (systematic-debugging) and spikes. Every tier works on a branch, never the starting branch; spikes never merge.
+- Specs/plans: [gitignored — always pass them by absolute path | committed — move them into the worktree at Phase 6 and commit there]. Never commit them to the starting branch.
+- Design doc = Phase 3 spec: include the Phase 3 sections and run the Phase 3 checkpoint before asking me to approve it.
+- After writing-plans: no execution-method question until the end of Phase 6. Plan approval is not a go; execution starts only when I say "start Phase 7".
+- Plan Global Constraints copy the access-control matrix, scale target, reuse list, config rule and ownership map verbatim.
+- Worktrees: always isolate, no need to ask (native tool, else `.worktrees/`), at the start of Phase 6. If `.worktrees` isn't gitignored or creation fails, stop and ask; never work in place. On resume, enter the existing worktree.
+- Phase 6 RED stubs: after proving RED, move them into their owning tasks; never commit failing tests ahead of their task.
+- During execution also stop and ask when: a previously passing test fails; a ruling would change the access matrix, schema, a public interface or scale design; a task needs a file outside the plan.
+- Before the executor deletes its workspace, copy the ledger's Ruling / parked / minor (deferred) / "no reachable spec" lines into the plan under `## Execution record`.
+- finishing-a-development-branch: not before Phases 8–9 are approved; then only the push-and-PR or keep option, never a merge option.
+```
+
+**After a Superpowers upgrade**, re-check these before trusting the notes in this file: where `brainstorming` saves the design doc and what its hard gate hands off to; `writing-plans`' plan header and execution handoff; the executors' stop conditions, what an implementer receives (`scripts/task-brief`), and whether the workspace is still deleted at finish; the `finishing-a-development-branch` menu; and the release notes for anything on adversarial review ([#1803](https://github.com/obra/superpowers/issues/1803)) or plan shape ([#2587](https://github.com/obra/superpowers/issues/2587)).
 
 ---
 
