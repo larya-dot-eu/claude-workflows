@@ -296,7 +296,7 @@ Do not create a new TDD document, and do not append the output as a separate sec
 2. The 3 test stubs are written in the real test runner and confirmed to be in a legitimate RED state (failing on assertion, not syntax) — and, on Superpowers executors, moved into their owning tasks.
 3. Strictly zero implementation/production code written yet.
 4. Execution method chosen (Superpowers: subagent-driven or native) — this is where `writing-plans`' handoff question gets answered.
-5. User says to start Phase 7. Approving the plan (Phase 4) or this phase's test design is not a go to execute: if an execution method was preset, `writing-plans` treats "plan approved" as the signal to start.
+5. The user approves the Phase 6 gate (e.g. "approved" or "start Phase 7") — approving the Phase 6 gate is the go to execute. Approving the plan (Phase 4) or an intermediate test-design message is not: if an execution method was preset, `writing-plans` treats "plan approved" as the signal to start.
 
 ---
 
@@ -446,7 +446,7 @@ Where a Superpowers skill and this list disagree, this list wins.
 - Name the tier and get my confirmation before any change — including "quick, clear tasks", "just dive in", bug fixes (systematic-debugging) and spikes. Every tier works on a branch, never the starting branch; spikes never merge.
 - Specs/plans: [gitignored — always pass them by absolute path | committed — move them into the worktree at Phase 6 and commit there]. Never commit them to the starting branch.
 - Design doc = Phase 3 spec: include the Phase 3 sections and run the Phase 3 checkpoint before asking me to approve it.
-- After writing-plans: no execution-method question until the end of Phase 6. Plan approval is not a go; execution starts only when I say "start Phase 7".
+- After writing-plans: no execution-method question until the end of Phase 6. Plan approval is not a go; execution starts only when I approve the Phase 6 gate (e.g. "start Phase 7").
 - Plan Global Constraints copy the access-control matrix, scale target, reuse list, config rule and ownership map verbatim.
 - Worktrees: always isolate, no need to ask (native tool, else `.worktrees/`), at the start of Phase 6. If `.worktrees` isn't gitignored or creation fails, stop and ask; never work in place. On resume, enter the existing worktree.
 - Phase 6 RED stubs: after proving RED, move them into their owning tasks; never commit failing tests ahead of their task.
@@ -477,7 +477,7 @@ Phase 4          Plan Writing          Ordered steps with exit states and verifi
                  OUTPUT                YYYY-MM-DD-[feature]-plan.md (+ optional plan-[feature].html only if asked)
 Phase 5          Adversarial Review    Break the plan + command dry-run + design-shape pass + abuse-case (security) + scale + reinvention/hardcode · fresh subagent when risky
                  LOOP-BACK             Surface fix → Ph.4 | Arch issue → Ph.3 | Wrong problem → Ph.2
-Phase 6          TDD Planning          Worktree first (resume = enter existing) · test matrix written INTO plan tasks · RED stubs proven, then moved into owning tasks · pick method · explicit "start Phase 7"
+Phase 6          TDD Planning          Worktree first (resume = enter existing) · test matrix written INTO plan tasks · RED stubs proven, then moved into owning tasks · pick method · go = Phase 6 gate approved ("start Phase 7")
 Phase 7          TDD Implementation    In the Phase 6 worktree · Red→Green→Refactor, vertical slices · extra stops (regression, design ruling, out-of-map file) · structural review after core tasks · save Execution record
 Phase 8          Post-Implementation   Plan vs. reality (every ruling = divergence), doc updates flagged
 Phase 9          Living Doc Update     After each phase + on checkpoint triggers (gate cleared, context warning, user signal)

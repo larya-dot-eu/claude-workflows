@@ -567,6 +567,9 @@ def gate_from_message(msg):
     return n if n is not None and 0 <= n <= 10 else None
 
 
+START_RE = re.compile(r"^(?:ok(?:ay)?[,.]?\s+)?(?:let'?s\s+)?start\s+phase\s+(\d{1,2})[.!]?$", re.I)
+
+
 def is_approval(text):
     t = (text or "").strip()
     if not t or len(t) > 80 or t.startswith("/"):
@@ -926,6 +929,17 @@ def on_prompt(payload, env, store, cwd):
             store.save(cwd, new)
         install_statusline(env)
         return output("UserPromptSubmit", text, show_status(new or store.load(cwd)))
+    start = START_RE.match((payload.get("prompt") or "").strip())
+    if engine_on(state) and start:
+        n, gate = int(start.group(1)), state.get("gate_pending")
+        if gate is None or n != gate + 1:
+            where = "no gate is pending" if gate is None else f"the pending gate is Phase {gate}"
+            return output("UserPromptSubmit",
+                          f"wf: the user asked to start Phase {n}, but {where}; phases move one at a time"
+                          + (f" (next is Phase {gate + 1})" if gate is not None else "") +
+                          ". Tell the user in one line; to jump anyway they can type `/wf " + str(n) + "`.",
+                          f"start Phase {n} not applied — {where}")
+        payload = dict(payload, prompt="approved")
     if engine_on(state) and is_approval(payload.get("prompt")):
         if state.get("gate_pending") is None:
             return output("UserPromptSubmit",

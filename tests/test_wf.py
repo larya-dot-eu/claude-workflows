@@ -1064,3 +1064,24 @@ class TestFollowBranch(unittest.TestCase):
         git(self.e.repo, "checkout", "-q", "-b", "feat-x")
         self.assertIsNone(self.e.run("PreToolUse", tool_name="Bash", tool_input={"command": "ls"}))
         self.assertEqual(self.e.state()["enabled"], "off")
+
+
+class TestStartPhase(EngineCase):
+    def test_start_phase_7_approves_the_p6_gate(self):
+        self.e.prompt("/wf 6")
+        self.stop("TDD plan\n[[gate P6]]")
+        out = self.e.prompt("start Phase 7")
+        self.assertEqual(self.e.state()["phase"], 7)
+        self.assertIn("Gate P6 approved → Phase 7", shown(out))
+
+    def test_start_phase_must_be_the_next_phase(self):
+        self.e.prompt("/wf 3")
+        self.stop("spec\n[[gate P3]]")
+        out = self.e.prompt("start phase 5")
+        self.assertEqual(self.e.state()["phase"], 3)
+        self.assertIn("Phase 4", ctx(out))
+
+    def test_docs_say_p6_approval_is_the_go(self):
+        doc = (ROOT / "Claude-Workflows-Best-Practices.md").read_text()
+        self.assertNotIn('execution starts only when I say "start Phase 7"', doc)
+        self.assertIn("approving the Phase 6 gate", doc)
