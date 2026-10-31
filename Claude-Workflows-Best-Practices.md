@@ -21,7 +21,9 @@ Not every change earns the full pipeline. Name the tier you believe applies and 
   1. State the blast radius — every file and caller the change touches, verified by opening them (for a bug fix, grep the callers of the function you're touching; the root-cause fix lives where all callers route through).
   2. Make the change, with a test where the logic is non-trivial.
   3. Verify with a real run, not by reading the diff.
+  Before step 2, move off the starting branch (feature branch or worktree) — Quick skips Phase 6, which is where Full creates its isolated workspace, so Quick must do it here.
   Phases 8–10 still apply when the change ships: the deploy gates are never skipped — only the planning phases are.
+- **Bug fixes and spikes on Superpowers.** "Fix this bug" routes to `systematic-debugging` before anything else, with no brainstorming and no worktree; a brainstorming *spike* skips plan, implementation and review by design. Both still go through the tier check and get a branch first. A spike stays throwaway and never merges — keeping it is a new request through the Full tier.
 - **Opting out of questions is not a tier.** Superpowers `brainstorming` treats a fully specified request as a "quick, clear task" and offers "just dive in" when you didn't ask for it. Neither one skips the tier check: name the tier and get it confirmed anyway.
 - **Escalation rule:** if a "quick" change grows — it touches a file you didn't name in the blast radius, raises a design question, or crosses a data boundary — stop and restart in the full tier. When unsure, default to full.
 
@@ -137,7 +139,7 @@ Report your findings explicitly to the user. Do not summarize as "looks good." I
 
 **Exit gate:** The spec is verified against the codebase. No unresolved conflicts. No unverified assumptions. User has approved the spec.
 
-**Superpowers:** brainstorming's design doc **is** this spec. Its default outline (intent, goals/non-goals/anti-goals, constraints, approaches, decided how, left to builder) has no slot for the access-control matrix, expected scale, transactional integrity, reuse or presentation-vs-logic — add them. Run the Transition Checkpoint above **before** asking for approval of the doc: after approval, brainstorming's hard gate goes straight to `writing-plans` and nothing else, so a checkpoint placed after it never runs. Its builder-check subagent is a useful extra pass but not a substitute — it only asks what a builder would need, not who may read whose records.
+**Superpowers:** brainstorming's design doc **is** this spec. Its default outline (intent, goals/non-goals/anti-goals, constraints, approaches, decided how, left to builder) has no slot for the access-control matrix, expected scale, transactional integrity, reuse or presentation-vs-logic — add them, to the short design doc for a "small change" too (one line each, or "N/A — why"). Run the Transition Checkpoint above **before** asking for approval of the doc: after approval, brainstorming's hard gate goes straight to `writing-plans` and nothing else, so a checkpoint placed after it never runs. Its builder-check subagent (projects only — small changes get none) is a useful extra pass but not a substitute — it only asks what a builder would need, not who may read whose records.
 
 ### Output Format
 
@@ -173,8 +175,8 @@ Each step must include:
 - How this step will be verified
 
 The plan as a whole must also carry:
-- **Global Constraints that carry the spec's rules verbatim** — the access-control matrix, the expected-scale target, the reuse list, and the presentation-vs-logic rule. When tasks are run by subagents (Superpowers `subagent-driven-development`), the implementer sees only its own task text plus Global Constraints, and the reviewer sees the same plus the diff. Neither reads the spec. A rule not copied here does not exist during implementation.
-- **An Ownership map, before the first task** — one owner per domain fact (which type/table/module holds it); one home per kind's traits; module import direction; the error type that crosses each boundary; and runtime flow — which component handles each event and where state lives over time. Tasks cite its rows instead of each redefining the fact. Per-task interface blocks only check that neighbours agree; without this map, two tasks that need the same fact each define it, and nobody sees it until the final review ([superpowers#2587](https://github.com/obra/superpowers/issues/2587)).
+- **Global Constraints that carry the spec's rules verbatim** — the access-control matrix, the expected-scale target, the reuse list, and the presentation-vs-logic rule. When tasks are run by subagents (Superpowers `subagent-driven-development`), the implementer sees its own task text plus Global Constraints (and whatever the controller chooses to add), and the reviewer sees the same plus the diff. Neither reads the spec. A rule not copied here does not exist during implementation.
+- **An Ownership map, inside Global Constraints** — one owner per domain fact (which type/table/module holds it); one home per kind's traits; module import direction; the error type that crosses each boundary; and runtime flow — which component handles each event and where state lives over time. Tasks cite its rows instead of each redefining the fact. It goes **inside Global Constraints**, not as a separate section before Task 1: Superpowers' `task-brief` copies an implementer's brief from its `Task N` heading to the next one, so text before Task 1 reaches no implementer — only Global Constraints are carried into every dispatch. Per-task interface blocks only check that neighbours agree; without this map, two tasks that need the same fact each define it, and nobody sees it until the final review ([superpowers#2587](https://github.com/obra/superpowers/issues/2587)).
 
 ### Transition Checkpoint Before Phase 5
 
@@ -194,7 +196,7 @@ Fix any issues found before proceeding.
 
 ### Output Format
 
-One required output, one optional companion — saved to your plans directory, e.g. `docs/plans/`, or `docs/superpowers/plans/` if you run the superpowers plugin (gitignored — local only, never committed; if `CLAUDE.md` names a different path, use that):
+One required output, one optional companion — saved to your plans directory, e.g. `docs/plans/`, or `docs/superpowers/plans/` if you run the superpowers plugin (stored the same way as the spec — local-only with absolute paths, or committed on the feature branch; see Phase 3 Output Format. If `CLAUDE.md` names a different path, use that):
 
 **1. Markdown plan (required — for Claude):**
 `YYYY-MM-DD-[feature-name]-plan.md` — ordered steps with exit states and verification methods. This is what future sessions execute from.
@@ -248,7 +250,14 @@ Check:
 
 Do not start this phase until Phase 5 is complete and the plan is structurally sound. Designing tests against a broken plan wastes the work.
 
-**Isolation first.** Create the isolated workspace now, at the start of Phase 6 — not in Phase 7. This phase writes test files into the real suite; done on the starting branch, those files land on it. Use the **superpowers** `using-git-worktrees` skill (declare "always use a worktree" in `CLAUDE.md` so it doesn't ask, and never falls back to working in place) or a feature branch by hand.
+**Isolation first.** Create the isolated workspace now, at the start of Phase 6 — not in Phase 7. This phase writes test files into the real suite; done on the starting branch, those files land on it. Use the **superpowers** `using-git-worktrees` skill or a feature branch by hand. Declare the preference in `CLAUDE.md` so the skill doesn't ask, and close its three escape hatches:
+- it prefers the harness's native worktree tool over `.worktrees/` — fine, use whichever it picks;
+- if `.worktrees/` isn't gitignored it adds it to `.gitignore` **and commits that on the current branch** — set this up once through a normal PR instead, or have it stop and ask;
+- if worktree creation is blocked (sandbox) it "works in the current directory" — stop and ask instead.
+
+**Resuming:** a fresh session (after `/clear` or a Phase 9 hand-off) starts in the main checkout. Check `git worktree list` and enter this plan's existing worktree; never create a second one from the default branch.
+
+**Committed specs/plans:** if you chose to commit them (Phase 3 Output Format), move the spec and plan from the main checkout into the worktree now, commit them there, and delete the main-checkout copies — otherwise two copies drift.
 
 Define before writing any implementation code:
 - What interface changes are needed? (concrete function/method signatures, input contracts, APIs, return types/shapes)
@@ -267,9 +276,9 @@ Output a prioritized list of behaviors to test with interface definitions agreed
 
 ### Output Format
 
-Do not create a new TDD document, and do not append the output as a separate section at the end of the plan. Superpowers executors hand each implementer **only its own `### Task N` block** (the `task-brief` script cuts the plan by task heading), so a trailing `## TDD` section is never read during implementation. Write the output where it will be read:
+Do not create a new TDD document, and do not append the output as a separate section at the end of the plan. Superpowers' `task-brief` cuts each implementer's brief from its `Task N` heading to the next one: text before Task 1 reaches no implementer, and a trailing `## TDD` section is glued onto the **last** task's brief only. Write the output where it will be read:
 
-- **Interface definitions + Prioritized Test Matrix** — into the existing Phase 4 plan file (`<plans-dir>/YYYY-MM-DD-[feature-name]-plan.md`): interfaces into the Ownership map and the owning tasks' Interfaces blocks; each behavior in the matrix as a test step inside the task that owns the code:
+- **Interface definitions + Prioritized Test Matrix** — into the existing Phase 4 plan file (`<plans-dir>/YYYY-MM-DD-[feature-name]-plan.md`): interfaces into the Ownership map (in Global Constraints) and the owning tasks' Interfaces blocks; each behavior in the matrix as a test step inside the task that owns the code:
   * Concrete type signatures and data models.
   * Numbered, ordered list of behaviors using the ZOMBIES progression (Zero/One/Many/Boundaries/Exceptions).
   * Categorization tag for each behavior: `[Happy]`, `[Sad]`, `[Edge]`.
@@ -279,13 +288,14 @@ Do not create a new TDD document, and do not append the output as a separate sec
   * Structure each test strictly using AAA (Arrange, Act, Assert).
   * Use clear descriptive naming: `should_[expected_behavior]_when_[state_or_condition]`.
   * Ensure the code compiles/parses, but the test assertion fails cleanly on behavior (`AssertionError` / failed expectation, NOT an unhandled runtime syntax crash).
-  * Commit them as the first commit on the feature branch, and change the owning tasks' "write the failing test" step to "already written in Phase 6 — run it and confirm it fails on the assertion", so the executor doesn't write them twice.
+  * **Running on Superpowers executors:** once RED is confirmed, copy each stub's code verbatim into its owning task's "write the failing test" step, then remove the stub files — do **not** commit them ahead of their tasks. A red test sitting in the suite before its task stalls execution: the worktree baseline check stops on failing tests, `task-done` refuses to record any task whose suite is red, implementers run the full suite and chase failures they don't own, and the per-task review diff no longer contains the test that drives it. Moved into the task, the stub becomes that task's own RED → GREEN.
 
 **Exit gate:** 
 1. Interface design and test order agreed with user.
-2. The 3 test stubs are written in the real test runner and confirmed to be in a legitimate RED state (failing on assertion, not syntax).
+2. The 3 test stubs are written in the real test runner and confirmed to be in a legitimate RED state (failing on assertion, not syntax) — and, on Superpowers executors, moved into their owning tasks.
 3. Strictly zero implementation/production code written yet.
 4. Execution method chosen (Superpowers: subagent-driven or native) — this is where `writing-plans`' handoff question gets answered.
+5. User says to start Phase 7. Approving the plan (Phase 4) or this phase's test design is not a go to execute: if an execution method was preset, `writing-plans` treats "plan approved" as the signal to start.
 
 ---
 
@@ -293,7 +303,7 @@ Do not create a new TDD document, and do not append the output as a separate sec
 
 **Isolation:** the isolated workspace from Phase 6 must exist — confirm you are in it before the first task (the **superpowers** executors check this themselves via `using-git-worktrees`). Do not implement directly on the branch you started the session on.
 
-**Execution skill:** drive this phase with a plan-execution + TDD process. Public options that implement this discipline: the **superpowers** skills (`subagent-driven-development` — a fresh implementer and a fresh reviewer per task; `executing-plans` — "native": you implement every task in this session, one fresh reviewer on the whole branch at the end; both load `test-driven-development` for the Red→Green→Refactor loop), or **gstack** (`/spec`, `/ship`). The per-feature plan names which; with neither installed, run the Red→Green→Refactor loop below by hand.
+**Execution skill:** drive this phase with a plan-execution + TDD process. Public options that implement this discipline: the **superpowers** skills (`subagent-driven-development` — a fresh implementer and a fresh reviewer per task; `executing-plans` — "native": you implement every task in this session, one fresh reviewer on the whole branch at the end; `executing-plans` loads `test-driven-development` for the Red→Green→Refactor loop; `subagent-driven-development` does not — its implementers follow TDD only if the task's steps say so, so every task keeps explicit "write failing test → run, see it fail" steps), or **gstack** (`/spec`, `/ship`). The per-feature plan names which; with neither installed, run the Red→Green→Refactor loop below by hand.
 
 Work in vertical slices. Complete one slice fully before starting the next.
 
@@ -323,7 +333,7 @@ Everything else stays a ruling — that keeps the speed the executors are built 
 
 **Structural checkpoint after core tasks.** If early tasks build abstractions that later tasks depend on, run one whole-branch structural review (design-shape checklist from Phase 5, against the code) right after those tasks and before the dependents start. Per-task reviewers see one diff each, so a fact defined twice across tasks is invisible to them until the final review — after later tasks have copied it.
 
-**Before the workspace is deleted.** When their final review is clean, Superpowers executors delete the plan's workspace — including the ledger with every `Ruling:` and `minor (deferred)` line. Copy those lines into the plan file under `## Execution record` first; Phase 8 needs them.
+**Before the workspace is deleted.** When their final review is clean, Superpowers executors delete the plan's workspace, including the ledger. They do list every ruling in their final chat message — but chat doesn't survive compaction or a new session. Copy the ledger's `Ruling:`, `parked`, `minor (deferred)` and "no reachable spec" lines into the plan file under `## Execution record` first (commit it if plans are committed); Phase 8 needs them.
 
 **Exit gate:** All plan steps implemented. All tests passing. No unplanned changes introduced. Execution record saved.
 
@@ -406,7 +416,7 @@ Verification is not just testing. Implementation passing tests is NOT done. A de
   A failure here blocks the deploy. A schema/index/statelessness gap routes back to Phase 3 — it is a design fix, not a deploy tweak.
 - **Green checks prove only what they exercise.** Automated checks that don't build and boot the *actual deployable artifact* say nothing about whether it ships — they can pass while the shipped build is broken. Name what your checks do **not** cover (the real artifact, the real entrypoint, the real runtime) and close that gap by hand before deploying.
 - **Automated checks are advisory unless the host enforces them as a required gate — know which yours is.** If merges aren't blocked on red or pending checks, a human must confirm every check is green (not pending, not skipped) before merging. Reading a green dashboard or an un-blocked merge control is not the same as confirming the checks actually passed.
-- **Superpowers `finishing-a-development-branch`** presents a fixed menu whose first option is *"Merge back to <base-branch> locally"*. Only option 2 (push and create a PR) or option 3 (keep the branch) is allowed here, and only after Phases 8 and 9. The merge itself comes last, per the ordering below.
+- **Superpowers `finishing-a-development-branch`** presents a fixed menu whose first option (normal repo) is *"Merge back to <base-branch> locally"*. Only *"Push and create a Pull Request"* or *"Keep the branch as-is"* is allowed here — pick by label, not number, because the detached-HEAD menu numbers them differently. Both executors invoke this skill straight after their final review; hold it until Phases 8 and 9 are approved. The merge itself comes last, per the ordering below.
 - **Never push straight to the default branch.** Every change — regardless of how small it looks — lands through a pull request, so CI runs before the code merges. A "trivial" direct push is exactly the case that skips the gate that would have caught it.
 - **Re-validate the deploy procedure against current code — don't trust a stale note.** A deploy command that worked before can break when imports/dependencies/structure change. Ask explicitly: *"does this build include everything the app imports?"* before running it.
 - **Irreversible/outward actions go LAST, after verification.** Do not merge to the main branch, write to production data, or deploy until the riskiest unknown is proven. Correct order: verify artifact → deploy → confirm health → then merge/seed/announce. Never sequence a merge or a prod data write ahead of "does it even boot?"
@@ -428,7 +438,7 @@ Verification is not just testing. Implementation passing tests is NOT done. A de
 ## Quick Reference
 
 ```
-Tier check       Full pipeline (default) | Quick (small bounded change): blast radius → change+test → real-run verify; deploy gates never skipped
+Tier check       Full pipeline (default) | Quick (small bounded change): branch → blast radius → change+test → real-run verify; deploy gates never skipped · bug fix / spike also tier-checked
 Prerequisites    Load CLAUDE.md, ROADMAP.md (optional), relevant code — confirm with user
 
 Phase 1          Context Priming       Confirm project understanding — user approves before Phase 2 (Superpowers: brainstorming's first message is this summary)
@@ -437,17 +447,17 @@ Phase 2          Exploration           Mandatory: superpowers brainstorming · A
 Phase 3          Spec Writing          Behavior, interfaces, edge cases, assumptions + access-control matrix + expected scale + reuse + config boundaries
                  CHECKPOINT            Spec vs. codebase: conflicts + unverified assumptions fixed — BEFORE design-doc approval
                  OUTPUT                YYYY-MM-DD-[feature]-spec.md (+ optional spec-[feature].html only if asked)
-Phase 4          Plan Writing          Ordered steps with exit states and verification + Global Constraints (matrix/scale/reuse/config verbatim) + Ownership map
+Phase 4          Plan Writing          Ordered steps with exit states and verification + Global Constraints (matrix/scale/reuse/config verbatim + Ownership map)
                  HANDOFF               writing-plans asks "which execution method?" → not yet, after Phase 6
                  CHECKPOINT            5 adversarial questions answered with specific findings
                  OUTPUT                YYYY-MM-DD-[feature]-plan.md (+ optional plan-[feature].html only if asked)
 Phase 5          Adversarial Review    Break the plan + command dry-run + design-shape pass + abuse-case (security) + scale + reinvention/hardcode · fresh subagent when risky
                  LOOP-BACK             Surface fix → Ph.4 | Arch issue → Ph.3 | Wrong problem → Ph.2
-Phase 6          TDD Planning          Worktree first · interfaces + test matrix written INTO plan tasks · RED stubs = 1st commit · pick execution method
+Phase 6          TDD Planning          Worktree first (resume = enter existing) · test matrix written INTO plan tasks · RED stubs proven, then moved into owning tasks · pick method · explicit "start Phase 7"
 Phase 7          TDD Implementation    In the Phase 6 worktree · Red→Green→Refactor, vertical slices · extra stops (regression, design ruling, out-of-map file) · structural review after core tasks · save Execution record
 Phase 8          Post-Implementation   Plan vs. reality (every ruling = divergence), doc updates flagged
 Phase 9          Living Doc Update     After each phase + on checkpoint triggers (gate cleared, context warning, user signal)
-Phase 10         Deployment & Release  Prove artifact locally → pass security + operational-readiness gates → deploy → confirm health → then merge/seed/announce · PR only, never direct push to default branch · finishing-a-development-branch: options 2/3 only
+Phase 10         Deployment & Release  Prove artifact locally → pass security + operational-readiness gates → deploy → confirm health → then merge/seed/announce · PR only, never direct push to default branch · finishing-a-development-branch: "Push + PR" / "Keep" only, after P8–9
 Cross-phase      Execution Discipline  Honor skill checklists · open files before citing · verify before claiming ready
 ```
 

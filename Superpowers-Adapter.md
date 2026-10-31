@@ -27,30 +27,39 @@ This project runs the 10-phase workflow in Claude-Workflows-Best-Practices.md on
 Where a Superpowers skill and this section disagree, this section wins.
 
 - **Tier first.** Opting out of brainstorming's questions does not opt out of the workflow. Name the
-  tier (Full / Quick) and get my confirmation before any change, including "quick, clear tasks".
+  tier (Full / Quick) and get my confirmation before any change, including "quick, clear tasks", bug
+  fixes (systematic-debugging) and spikes. Every tier works on a branch, never the starting branch.
+  A spike is throwaway and never merges.
 - **Specs and plans:** design doc = Phase 3 spec, saved to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`;
   plans to `docs/superpowers/plans/YYYY-MM-DD-<feature>.md`. Do not commit them to the branch you
   started on. [Pick one: "They are gitignored — always pass them to skills and subagents by absolute
   path." | "Commit them on the feature branch once it exists."]
-- **Worktrees:** yes, always use an isolated worktree under `.worktrees/` (no need to ask). Create it
-  at the start of Phase 6, before any test file is written.
+- **Worktrees:** yes, always isolate (no need to ask) — native worktree tool if there is one, else
+  `.worktrees/`. Create it at the start of Phase 6, before any test file is written. If `.worktrees`
+  isn't gitignored, or creation fails, stop and ask — never commit `.gitignore` to the starting branch
+  and never work in place. In a new session, if `git worktree list` shows this plan's worktree, enter
+  it; never create a second one.
 - **After brainstorming's design doc:** before you ask me to approve it, run the Phase 3 checkpoint
   (conflicts with existing code, unverified assumptions) and confirm it has the Phase 3 required
   sections. My approval of the doc clears Phase 3.
 - **After writing-plans:** do not ask me to pick an execution method yet. Phase 4 checkpoint → Phase 5
-  adversarial review (fresh-context subagent) → Phase 6 TDD planning come first. Ask about the
-  execution method at the end of Phase 6.
+  adversarial review → Phase 6 TDD planning come first. Ask about the execution method at the end of
+  Phase 6. Approving a plan is not a go: execution starts only when I say "start Phase 7".
 - **Global Constraints in every plan** must copy, verbatim, the spec's access-control matrix, the
-  expected-scale target, the reuse list, and the config-boundary rule. Implementer and reviewer
-  subagents see only their task brief plus Global Constraints.
+  expected-scale target, the reuse list, the config-boundary rule, and the Ownership map. Implementer
+  and reviewer subagents see their task brief plus Global Constraints, not the spec.
+- **Phase 6 RED stubs:** after proving RED, move each stub's code into its owning task's failing-test
+  step and remove the stub file. Never commit failing tests ahead of their task.
 - **During execution** (subagent-driven-development or executing-plans), stop and ask me, in addition
   to the skill's own four stop conditions, when: a previously passing test fails; a ruling would change
   the access-control matrix, the schema, a public interface, or the scale design; or a task needs a
   file outside the plan's file map.
-- **Before the executor deletes its workspace:** copy the ledger's `Ruling:` and `minor (deferred)`
-  lines into the plan file under `## Execution record`. Phase 8 reviews every ruling as a divergence.
-- **finishing-a-development-branch:** offer only "Push and create a Pull Request" or "Keep the branch
-  as-is". Never merge locally into the default branch. Phases 8–10 run before the PR is merged.
+- **Before the executor deletes its workspace:** copy the ledger's `Ruling:`, `parked`,
+  `minor (deferred)` and "no reachable spec" lines into the plan file under `## Execution record`.
+  Phase 8 reviews every ruling as a divergence.
+- **finishing-a-development-branch:** do not invoke it until Phases 8 and 9 are approved. Then offer
+  only "Push and create a Pull Request" or "Keep the branch as-is" (by label). Never merge locally.
+  Phase 10 runs before the PR is merged.
 ```
 
 Fill in the bracket in the second bullet with your choice (see [Break 3](#break-3--the-spec-and-plan-are-not-in-the-worktree)).
@@ -62,12 +71,13 @@ Fill in the bracket in the second bullet with your choice (see [Break 3](#break-
 | Workflow phase | Superpowers skill | Gate the skill skips on its own | Override |
 |---|---|---|---|
 | Tier check | `using-superpowers`, `brainstorming` "quick, clear task: do it" | Tier confirmation, blast radius | Break 1 |
+| (side routes) | `systematic-debugging` ("Fix this bug"), brainstorming spikes | Tier check, isolation, plan, review | Break 13 |
 | Prereqs + Phase 1 | `brainstorming` → *Look Before You Ask* + *Your First Message* | Explicit Phase 1 confirmation | Break 2 |
 | Phase 2 | `brainstorming` → *The Conversation*, *Play It Back* | "Ask only, propose nothing" until exit gate | Break 2 |
 | Phase 3 | `brainstorming` → *Lay out the approaches*, *The Written Design*, builder check | Phase 3 required sections + codebase checkpoint; where the doc is committed | Breaks 3, 4 |
 | Phase 4 | `writing-plans` (+ Self-Review) | 5 checkpoint questions; goes straight to "pick an execution method" | Breaks 5, 6 |
 | Phase 5 | *(none — removed after v5.0, see [#1803](https://github.com/obra/superpowers/issues/1803))* | Whole phase | Break 6, 7 |
-| Phase 6 | *(none — TDD steps are written into each plan task)* | Separate TDD planning; RED stubs on starting branch | Break 8 |
+| Phase 6 | *(none — TDD steps are written into each plan task)* | Separate TDD planning; RED stubs on starting branch / stalling the executor | Breaks 8, 10 |
 | Phase 7 | `using-git-worktrees` + `subagent-driven-development` or `executing-plans` + `test-driven-development` | Regression stop, scope-creep stop | Breaks 9, 10 |
 | Phase 8 | SDD/executing-plans final whole-branch review | Plan-vs-reality reconciliation; ledger deleted | Break 11 |
 | Phase 9 | *(none)* | — | Run by hand |
@@ -132,9 +142,12 @@ Each entry says **what breaks**, **where** (the skill text that causes it), **ho
   override both"):
   - **Keep them local:** keep `docs/` gitignored, and write the `**Spec:**` line and every skill or
     subagent hand-off as an **absolute path** into the main checkout. `sdd-workspace` handles a plan
-    outside the repo root (it records an absolute marker).
-  - **Commit them:** commit spec + plan on the **feature branch** after the worktree exists. They are
-    then reviewable in the PR.
+    outside the repo root (it records an absolute marker). Caveat: the main checkout's working tree is
+    one copy, so two features in flight must use different file names (the date + topic prefix does that).
+  - **Commit them:** at the start of Phase 6, move spec + plan from the main checkout into the new
+    worktree, commit them on the **feature branch**, and delete the main-checkout copies (otherwise two
+    copies drift, and Phase 8's "spec updated" lands in whichever one the agent opened). They are then
+    reviewable in the PR.
   Either way, nothing is committed to the starting branch.
 - **When:** Phase 3 save, Phase 4 save, Phase 7 start.
 
@@ -149,16 +162,19 @@ Each entry says **what breaks**, **where** (the skill text that causes it), **ho
 - **Where:** `brainstorming/SKILL.md` → *The Written Design*, *Builder check*, `<HARD-GATE>`.
 - **How:** The design doc is the Phase 3 spec, so it must carry the Phase 3 required sections. Run the
   Phase 3 checkpoint **before** asking for approval, not after. The approval then really is the Phase 3
-  gate, and the hand-off to `writing-plans` is correct. Add the Phase 3 sections to the builder check's
+  gate, and the hand-off to `writing-plans` is correct. This applies to the **short** design doc for a
+  small change too (one line per section, or "N/A — why"); the builder check runs only for projects, so
+  for small changes nothing else will ask. For projects, add the Phase 3 sections to the builder check's
   domain line, e.g. *"a software engineer who must also implement the access rules and scale target"*.
 - **When:** End of Phase 3.
 
 ### Break 5 — Security and scale rules never reach the subagents that write the code
 
-- **What:** In subagent-driven development an implementer sees **only its task brief** (one
-  `### Task N` section, extracted by `task-brief`) plus the controller's Global Constraints block. The
-  reviewer sees the same plus the diff. Neither reads the spec. Anything in the spec that isn't copied
-  into Global Constraints or the task text is invisible during Phase 7. The cheap implementer model
+- **What:** In subagent-driven development the controller reads the spec, but an implementer sees its
+  task brief (cut from the plan by `task-brief`), the Global Constraints, and whatever interfaces and
+  rulings the controller chooses to add. The reviewer sees the brief, the report, the diff and Global
+  Constraints. Neither reads the spec. A spec rule that isn't in Global Constraints or the task text
+  reaches the code only if the controller happens to remember it — and the cheap implementer model
   doesn't know the access matrix exists.
 - **Where:** `writing-plans/SKILL.md` → *Global Constraints*; `subagent-driven-development/SKILL.md` →
   *Dispatch the implementer*, *Review the task*.
@@ -177,8 +193,10 @@ Each entry says **what breaks**, **where** (the skill text that causes it), **ho
   four passed the self-review and would have failed on first contact.
 - **Where:** `writing-plans/SKILL.md` → *Self-Review*, *Execution Handoff*.
 - **How:** Answer the handoff with "not yet". Run the Phase 4 checkpoint, Phase 5 and Phase 6, and
-  pick the execution method at the end of Phase 6. If the user already said which method they want,
-  `writing-plans` keeps it; that is fine. It only means the question isn't asked again.
+  pick the execution method at the end of Phase 6. Watch the preset case: if you already named a method,
+  `writing-plans` only asks you to review the plan and then *"use the preserved method"* — so your Phase 4
+  "approved" starts execution and Phases 5–6 never happen. Hence the `CLAUDE.md` rule: plan approval is
+  not a go; only "start Phase 7" is.
 - **When:** End of Phase 4.
 
 ### Break 7 — Plans fix the design task by task (issue #2587)
@@ -193,9 +211,10 @@ Each entry says **what breaks**, **where** (the skill text that causes it), **ho
 - **Where:** `writing-plans/SKILL.md` → *Task Structure* (Interfaces), *Self-Review* #3;
   `subagent-driven-development/references/preflight.md`.
 - **How:**
-  - Phase 4: the plan gets a short **Ownership map** before Task 1. One owner per domain fact, one
-    home per kind's traits, module import direction, the error type at each boundary, and **runtime
-    flow**: which component handles each event and where state lives over time. Tasks cite its rows.
+  - Phase 4: the plan gets a short **Ownership map**, placed **inside Global Constraints** (text before
+    Task 1 reaches no implementer — see Break 8). One owner per domain fact, one home per kind's traits,
+    module import direction, the error type at each boundary, and **runtime flow**: which component
+    handles each event and where state lives over time. Tasks cite its rows.
   - Phase 5: add a **design-shape pass**, run on the plan text: one owner per fact; no optional field
     for a fact its kind always has; no trait split across modules; no code branching on a kind's name;
     a typed error at each boundary; an import direction for every new module; every event has one
@@ -205,20 +224,26 @@ Each entry says **what breaks**, **where** (the skill text that causes it), **ho
     first" option, at the cost of one extra review).
 - **When:** Phases 4, 5, 7.
 
-### Break 8 — Phase 6 writes tests on the wrong branch, and an appended TDD section is never read
+### Break 8 — Phase 6 output lands where nobody reads it, or where it stalls execution
 
-- **What:** Two separate problems.
-  1. Phase 6 writes the top-3 RED tests "into the real test suite". The worktree was only created in
-     Phase 7. So the tests land on the starting branch.
-  2. Phase 6 appends a `## TDD` section at the end of the plan. `task-brief` extracts **only** the
-     `### Task N` heading block. A trailing section is never seen by any implementer. The test matrix
-     (ZOMBIES, Happy/Sad/Edge) is dead text.
-- **Where:** `subagent-driven-development/scripts/task-brief`; `executing-plans` → *Take the task*.
-- **How:** Create the worktree at the **start** of Phase 6. Write the Phase 6 output **into each owning
-  task** (its test steps, tagged `[Happy]/[Sad]/[Edge]`). The interfaces go into the Ownership map
-  and the tasks' Interfaces blocks. The three RED stubs are committed as the first commit on the feature
-  branch, and the owning tasks' "write the failing test" steps say "already written in Phase 6 — run it,
-  confirm it fails on the assertion".
+- **What:** Three separate problems.
+  1. Phase 6 writes the top-3 RED tests "into the real test suite". The worktree used to be created
+     only in Phase 7, so the tests landed on the starting branch.
+  2. `task-brief` cuts each implementer's brief from its `Task N` heading to the next `Task` heading.
+     Text **before** Task 1 reaches no implementer. Text **after** the last task (an appended `## TDD`
+     section) is glued onto the *last* task's brief only. The test matrix ends up in the wrong place.
+  3. If the RED stubs are committed ahead of their tasks, the suite is red before Task 1. The worktree
+     skill's baseline check stops on failing tests; `executing-plans`' `task-done` refuses to record any
+     task whose test run fails; SDD implementers run the full suite before committing and chase failures
+     they don't own; and the per-task review diff (`BASE..HEAD`) no longer contains the test that drives
+     the task.
+- **Where:** `subagent-driven-development/scripts/task-brief`; `executing-plans/scripts/task-done`;
+  `using-git-worktrees` → *Step 3: Verify Clean Baseline*; `implementer-prompt.md`.
+- **How:** Create the worktree at the **start** of Phase 6. Write the test matrix **into each owning
+  task** (its test steps, tagged `[Happy]/[Sad]/[Edge]`); interfaces go into the Ownership map (in Global
+  Constraints) and the tasks' Interfaces blocks. Prove the three RED stubs in the real runner (that is the
+  Phase 6 gate), then copy each stub's code verbatim into its owning task's failing-test step and
+  **remove the stub file**. Each stub becomes its own task's RED → GREEN, inside that task's diff.
 - **When:** Phase 6.
 
 ### Break 9 — "Rulings, not stalls" overrides the regression and scope-creep stops
@@ -233,41 +258,66 @@ Each entry says **what breaks**, **where** (the skill text that causes it), **ho
 - **How:** Add stop conditions in `CLAUDE.md` (user instructions beat skills): regression; a ruling
   that changes the access matrix, schema, a public interface or the scale design; a file outside the
   plan's file map. Everything else stays a ledgered ruling. That keeps the speed the skill is built for.
+  Also: `executing-plans` loads `test-driven-development`; `subagent-driven-development` does **not** — its
+  implementers do TDD only "if task says to". Keep explicit failing-test steps in every task.
 - **When:** Phase 7.
 
-### Break 10 — Isolation is opt-in, and gets asked at the wrong moment
+### Break 10 — Isolation has three ways back onto the starting branch
 
-- **What:** `using-git-worktrees` asks for consent before creating a worktree unless a preference is
-  declared. If declined, it *"works in place"*, which is the starting branch.
-- **Where:** `using-git-worktrees/SKILL.md` → *Step 0*.
-- **How:** Declare the preference in `CLAUDE.md` ("yes, always, `.worktrees/`") so it never asks and
-  never falls back to in-place. If you are already in a linked worktree (a native worktree tool made
-  one), Step 0 detects it and that counts. A plain clone is *not* isolation: it is a normal checkout
-  and still needs a feature branch or worktree.
-- **When:** Start of Phase 6.
+- **What:** `using-git-worktrees`:
+  1. asks for consent unless a preference is declared, and on "no" *"works in place"*;
+  2. if `.worktrees/` isn't gitignored, *"Add to .gitignore, commit the change"* — on the current branch,
+     i.e. often a direct commit to the default branch;
+  3. if `git worktree add` is blocked (sandbox), *"you're working in the current directory instead"*.
+  It also prefers the harness's native worktree tool over `.worktrees/`. And a session resumed after
+  `/clear` or a Phase 9 hand-off starts in the main checkout, where Step 0 sees a normal repo and — with
+  "always" declared — happily creates a *second* worktree from the default branch, without Phase 6's work.
+- **Where:** `using-git-worktrees/SKILL.md` → *Step 0*, *Step 1a*, *Safety Verification*, *Sandbox fallback*.
+- **How:** In `CLAUDE.md`: always isolate (native tool, else `.worktrees/`); if the ignore rule is
+  missing or creation fails, stop and ask; on resume, enter the existing worktree from `git worktree
+  list`. Add `.worktrees/` and `.superpowers/` to `.gitignore` once, through a normal PR, during setup.
+  A plain clone (e.g. a cloud session) is not isolation — it still needs a feature branch.
+- **When:** Setup; start of Phase 6; every resumed session.
 
 ### Break 11 — The executor deletes the evidence Phase 8 needs
 
 - **What:** When the final review is clean, both executors **delete the plan's workspace**, which
-  holds the ledger with every `Ruling:` and deferred minor. The only surviving copy is the executor's
-  final chat message ("Rulings I made", "Deferred minors"). That is gone after compaction and never
-  written into the plan. Phase 8 then compares plan vs reality without the list of every place
-  reality was decided by the agent, and can honestly-but-wrongly write "no divergence found".
+  holds the ledger with every `Ruling:` and deferred minor. The executor does list them all in its final
+  chat message ("Rulings I made", "Deferred minors") — but chat is not durable: compaction, `/clear` or the
+  Phase 9 hand-off to a fresh session loses it, and it is never written into the plan. Phase 8 then
+  compares plan vs reality without the list of every place reality was decided by the agent, and can
+  honestly-but-wrongly write "no divergence found".
 - **Where:** `executing-plans/SKILL.md` → *Finish*; `subagent-driven-development/references/final-review.md` → *Finish*.
-- **How:** Before deletion, copy those lines into the plan file under `## Execution record`. In Phase 8,
+- **How:** Before deletion, copy the `Ruling:`, `parked`, `minor (deferred)` and "no reachable spec"
+  lines into the plan file under `## Execution record` (commit it if plans are committed). In Phase 8,
   **every ruling is a divergence** and gets one of: *matches spec* / *spec updated* / *reverted*. "No
   divergence found" is only allowed when the record has zero rulings.
 - **When:** End of Phase 7, Phase 8.
 
 ### Break 12 — `finishing-a-development-branch` offers "Merge locally" first
 
-- **What:** Option 1 of its fixed menu merges into the base branch locally. The workflow says every
-  change lands through a PR, and merging comes **after** deploy + health check. The skill also runs
-  right after the executor, before Phases 8–10.
+- **What:** Option 1 of its fixed menu (normal repo) merges into the base branch locally. The workflow
+  says every change lands through a PR, and merging comes **after** deploy + health check. Both executors
+  invoke it as their last step, so it runs before Phases 8–10. On a detached HEAD the menu is
+  renumbered (1 = push + PR, 2 = keep), so "options 2/3 only" would ban the PR there.
 - **Where:** `finishing-a-development-branch/SKILL.md` → *Step 4*.
-- **How:** Allowed options are 2 (push + PR) and 3 (keep). Run Phase 8 and 9 before invoking it. Phase 10's
-  deploy gates run against the PR's branch. Merge is the last step.
+- **How:** Hold it until Phases 8 and 9 are approved. Allowed options, **by label**: "Push and create a
+  Pull Request" or "Keep the branch as-is". Phase 10's deploy gates run against the PR's branch. Merge is
+  the last step.
 - **When:** End of Phase 7 → Phase 10.
+
+### Break 13 — Bug fixes and spikes take side routes past every gate
+
+- **What:** `using-superpowers` sends "Fix this bug" to `systematic-debugging` first: no brainstorming,
+  no tier check, no worktree. Brainstorming's spikes *"skip the plan, implementation, and review
+  process"* and are built wherever the session is. The Quick tier, meanwhile, skips Phase 6 — which is
+  now where isolation happens — so a Quick change had no isolation step at all.
+- **Where:** `using-superpowers/SKILL.md` → *Skill Priority*; `brainstorming/SKILL.md` → *Spike to feel
+  things out*, `<HARD-GATE>`.
+- **How:** Bug fix → `systematic-debugging` finds the root cause, then the tier check (most land in
+  Quick), then a branch. Spike → a throwaway branch, never merged; keeping it is a new Full-tier request.
+  Quick tier → branch first, then blast radius.
+- **When:** Any request that doesn't start with brainstorming.
 
 ---
 
@@ -279,7 +329,7 @@ what to check rather than re-specify:
 | Workflow rule | Superpowers v7.0.1 mechanism |
 |---|---|
 | Evidence before "done" | `verification-before-completion` (Iron Law, gate function) |
-| Red → Green → Refactor | `test-driven-development`, loaded by both executors before Task 1 |
+| Red → Green → Refactor | `test-driven-development`, loaded by `executing-plans` before Task 1 (SDD implementers only follow the task's own steps) |
 | Phase 4 "exit state per step", #2309 task-state | Step granularity + *Interfaces Consumes/Produces* + pre-flight scan |
 | Phase 4 Q3 "extract everything" | *Global Constraints* + *Review Focus* + Self-Review #1 spec coverage |
 | Phase 8 "plan vs reality" (partly) | Final whole-branch review on the most capable model |

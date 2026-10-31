@@ -95,7 +95,7 @@ Without them you run the workflow by hand — the gates and checklists are the s
 - **[`Superpowers-Adapter.md`](./Superpowers-Adapter.md)** — only if you run [Superpowers](https://github.com/obra/superpowers).
   Its skills hand off to each other on their own (`brainstorming` → `writing-plans` → executor →
   `finishing-a-development-branch`), and each handoff skips at least one gate here. The adapter maps
-  phase ↔ skill, lists the 12 breaks found in v7.0.1 with what/where/how/when, and has a block to paste
+  phase ↔ skill, lists the 13 breaks found in v7.0.1 with what/where/how/when, and has a block to paste
   into your project's `CLAUDE.md` — Superpowers itself says user instructions outrank skills.
 
 The compact file is enough to hold the discipline; the full file is enough to execute it.
@@ -117,7 +117,9 @@ Or do it by hand — nothing activates on its own; cloning this repo just gives 
 **your** project:
 
 1. Copy both workflow files into your project root (committed, so teammates get them too — don't put
-   them in a gitignored dir like `docs/`).
+   them in a gitignored dir like `docs/`). On Superpowers, also copy `Superpowers-Adapter.md`, paste its
+   section 1 block into your `CLAUDE.md`, and add `.worktrees/` and `.superpowers/` to `.gitignore` (in a
+   normal PR) so the skills never commit that themselves on your current branch.
 2. Load the compact file each session — either paste it / reference it manually, or set up the hooks
    below once and it loads automatically in every session of that project.
 3. Tell the agent to follow the workflow for the feature at hand.
