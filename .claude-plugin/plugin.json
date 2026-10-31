@@ -1,6 +1,6 @@
 {
   "name": "wf",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Invisible skin for Claude-Workflows-Best-Practices: /wf on|off|pause, levels lite/standard/strict, automatic phase tracking with user-approved gates, Superpowers-aware.",
   "author": { "name": "larya-dot-eu", "url": "https://github.com/larya-dot-eu" },
   "homepage": "https://github.com/larya-dot-eu/claude-workflows",

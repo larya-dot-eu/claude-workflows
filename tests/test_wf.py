@@ -1238,3 +1238,53 @@ class TestExecutorReminderMatchesDocs(EngineCase):
             self.assertIn(item, text)
         doc = (ROOT / "Claude-Workflows-Best-Practices.md").read_text()
         self.assertIn('"no reachable spec"', doc)
+
+
+# ================================================================ /wf help
+
+class TestHelp(unittest.TestCase):
+    def setUp(self):
+        self.e = Env()
+
+    def tearDown(self):
+        self.e.close()
+
+    def test_help_shows_everyday_guide_in_terminal(self):
+        out = self.e.prompt("/wf help")
+        text = shown(out)
+        for cmd in ("/wf on", "/wf pause", "/wf status", "/wf off", "approved", "/wf help strict"):
+            self.assertIn(cmd, text)
+        self.assertNotIn(text.splitlines()[1], ctx(out))   # the guide is shown, not sent to Claude
+
+    def test_help_changes_nothing_and_creates_no_state(self):
+        self.e.prompt("/wf help")
+        self.assertFalse((self.e.data / "state").exists())
+
+    def test_every_command_has_a_topic_with_an_example(self):
+        for topic in ("on", "off", "pause", "resume", "status", "lite", "standard", "strict", "new",
+                      "phase", "dirs", "default", "statusline", "gate", "levels"):
+            text = shown(self.e.prompt(f"/wf help {topic}"))
+            self.assertIn("Example", text, topic)
+            self.assertLess(len(text.splitlines()), 9, topic)
+
+    def test_help_number_means_phase_topic(self):
+        self.assertIn("go back", shown(self.e.prompt("/wf help 4")).lower())
+
+    def test_unknown_command_shows_help_in_terminal(self):
+        out = self.e.prompt("/wf banana")
+        self.assertIn("unknown", shown(out).lower())
+        self.assertIn("/wf help", shown(out))
+
+    def test_unknown_topic(self):
+        self.assertIn("/wf help", shown(self.e.prompt("/wf help xyz")))
+
+
+class TestShortHint(unittest.TestCase):
+    def test_hint_is_short(self):
+        front = (ROOT / "skills/wf/SKILL.md").read_text().split("---")[1]
+        hint = re.search(r'argument-hint:\s*"(.*)"', front).group(1)
+        self.assertEqual(hint, "[on | off | pause | status | help]")
+
+    def test_plugin_version_matches_readme(self):
+        version = json.loads((ROOT / ".claude-plugin/plugin.json").read_text())["version"]
+        self.assertIn(f"**Version:** v{version}", (ROOT / "README.md").read_text())

@@ -30,6 +30,8 @@ PHASE_NAMES = {0: "Tier + Prereqs", 1: "Context", 2: "Explore", 3: "Spec", 4: "P
                5: "Adversarial Review", 6: "TDD Plan", 7: "TDD Build", 8: "Post-Impl Review",
                9: "Living Docs", 10: "Deploy"}
 
+HELP_SHOWN = ("The /wf help text was shown to the user directly in their terminal. Reply with one short "
+              "line only, e.g. 'Help is shown above.' Do nothing else.")
 HELP = ("/wf commands: `/wf on [lite|standard|strict]`, `/wf off`, `/wf pause`, `/wf resume`, "
         "`/wf lite|standard|strict`, `/wf default <level>`, `/wf status`, `/wf <0-10>` (jump to a phase), "
         "`/wf new` (new feature, back to the tier check), `/wf dirs <spec> <plan>`, `/wf statusline`.")
@@ -331,6 +333,70 @@ def statusline_snippet(env):
             '`<your command>; %s`.' % (json.dumps(cmd, ensure_ascii=False), cmd))
 
 
+# ---------------------------------------------------------------- /wf help (shown to the user only)
+
+HELP_GUIDE = """help — everyday use
+  /wf on              switch on for this project (default level: standard)
+  /wf pause · resume  go quiet for a side task · continue where you were
+  /wf status          where am I: P0 ✓ · P1 ✓ · P2 ⚠ skipped · P3 70%
+  /wf off             fully off for this project
+  At a gate: reply "approved" (or "start Phase 7") → next phase
+  Rarely:  /wf strict · /wf 4 (go back) · /wf new · /wf dirs · /wf default · /wf statusline
+  More: /wf help <command>, e.g. /wf help strict · full guide: README → 'Quick start'"""
+
+HELP_TOPICS = {
+    "on": "/wf on [level] — switch the skin on for this project and branch.\n"
+          "  Claude gets the workflow spine once; phases then move on your approvals.\n"
+          "  Example: /wf on   ·   /wf on strict (for auth, payments, schema work)",
+    "off": "/wf off — fully off for this project; the current phase is forgotten.\n"
+           "  Use pause instead if you want to come back to the same phase.\n"
+           "  Example: /wf off",
+    "pause": "/wf pause — go quiet (no rules, no gates, no guard) but remember the phase.\n"
+             "  Good for a spike, a side question or an unrelated quick fix.\n"
+             "  Example: /wf pause … do the side task … /wf resume",
+    "resume": "/wf resume — switch back on at the phase you paused in.\n"
+              "  Example: /wf resume",
+    "status": "/wf status — level, current phase and the timeline of this feature.\n"
+              "  ✓ approved · ⚠ skipped (left without an approved gate) · % = gate checklist.\n"
+              "  Example: /wf status  →  P0 ✓ · P1 ✓ · P2 ⚠ skipped · P3 70% (gate)",
+    "levels": "Levels — how strict the skin is (switch any time):\n"
+              "  lite: every-phase rules only, no phases (docs, typos, config tweaks)\n"
+              "  standard: phases + gates + checklist % (normal features — the default)\n"
+              "  strict: + extra turn to fill missing items, merges blocked until Phase 10\n"
+              "          (auth, payments, database schema, personal data, public APIs)\n"
+              "  Example: /wf strict   ·   /wf default standard",
+    "gate": "Gates — Claude ends a phase with its checklist lines and [[gate P3]].\n"
+            "  You see: WF ▸ Gate P3 reached · checklist 8/10 (80%) · missing: …\n"
+            "  Read the missing list, then reply approved / looks good / proceed → next phase.\n"
+            "  Anything with but, change or a question mark is not an approval.\n"
+            "  Example: approved   ·   start Phase 7 (after the Phase 6 gate)",
+    "new": "/wf new — start a new feature: back to the tier check, timeline cleared.\n"
+           "  Brainstorming does this for you; on a branch it makes that branch its own feature.\n"
+           "  Example: /wf new",
+    "phase": "/wf <0-10> — jump to a phase. Mainly to go back on purpose (a loop-back),\n"
+             "  e.g. when Phase 5 sends the plan back to Phase 4. Skipped phases show ⚠.\n"
+             "  Example: /wf 4",
+    "dirs": "/wf dirs <spec> <plan> — your own spec/plan folders (relative to the repo root),\n"
+            "  if they aren't docs/superpowers/specs|plans or docs/specs|plans.\n"
+            "  Example: /wf dirs design/specs design/plans   ·   /wf dirs (show current)",
+    "default": "/wf default <level> — the level /wf on uses on this machine.\n"
+               "  Example: /wf default standard",
+    "statusline": "/wf statusline — prints the line to add to ~/.claude/settings.json once per\n"
+                  "  machine, so you always see [WF P3 70% · ✓✓⚠ · standard] under the prompt.\n"
+                  "  Example: /wf statusline",
+}
+HELP_TOPICS.update({lvl: HELP_TOPICS["levels"] for lvl in LEVELS})
+HELP_TOPICS.update({"approve": HELP_TOPICS["gate"], "approved": HELP_TOPICS["gate"]})
+
+
+def help_text(topic=None):
+    if not topic:
+        return HELP_GUIDE
+    if topic.isdecimal():
+        topic = "phase"
+    return HELP_TOPICS.get(topic) or f"no help for '{topic}'. Try /wf help (everyday use)."
+
+
 # ---------------------------------------------------------------- /wf commands
 
 CMD_RE = re.compile(r"^\s*/wf(?::wf)?(?:\s+(.*))?\s*$", re.I | re.S)
@@ -389,6 +455,8 @@ def run_command(cmd, args, state, store, env, cwd):
     if cmd == "status":
         tl = timeline_text(state) if state["phase"] is not None else ""
         return None, f"{tell}workflow skin {describe(state)}." + (f" Timeline: {tl}." if tl else "")
+    if cmd == "help":
+        return None, HELP_SHOWN
     if cmd == "dirs":
         if len(args) == 2:
             state["dirs"] = {"spec": args[0], "plan": args[1]}
@@ -415,7 +483,7 @@ def run_command(cmd, args, state, store, env, cwd):
         state.update(phase=0, injected=0)
         lead = f"{tell}new feature — starting at the tier check.\n\n"
         return state, lead + skin_context(state, env, cwd, budget=LIMIT - len(lead))
-    return None, "Show the user: unknown /wf command. " + HELP
+    return None, "Show the user in one line: unknown /wf command. " + HELP
 
 
 # ---------------------------------------------------------------- per-phase checklists
@@ -1027,7 +1095,14 @@ def on_prompt(payload, env, store, cwd):
         if new is not None:
             store.save(cwd, new)
         install_statusline(env)
-        return output("UserPromptSubmit", text, show_status(new or store.load(cwd)))
+        cmd, args = parsed
+        if cmd == "help":
+            show = help_text(args[0] if args else None)
+        elif text.startswith("Show the user in one line: unknown"):
+            show = f"unknown command '/wf {cmd}'. Type /wf help for the everyday commands."
+        else:
+            show = show_status(new or store.load(cwd))
+        return output("UserPromptSubmit", text, show)
     start = START_RE.match((payload.get("prompt") or "").strip())
     if engine_on(state) and start:
         n, gate = int(start.group(1)), state.get("gate_pending")
@@ -1074,6 +1149,9 @@ HANDLERS = {
 }
 
 
+READ_ONLY_COMMANDS = ("help", "status", "statusline")
+
+
 def handle(event, payload, env):
     cwd = payload.get("cwd") or env.get("CLAUDE_PROJECT_DIR") or os.getcwd()
     fn = HANDLERS.get(event)
@@ -1098,7 +1176,10 @@ def handle(event, payload, env):
 def _handle(event, payload, env, store, cwd, fn):
     # Fast path: the skin was never used here, or is off, and this isn't a /wf command — nothing to do.
     # No lock, no files, no further git calls (this runs before every Bash tool call in every project).
-    if not (event == "UserPromptSubmit" and parse_command(payload.get("prompt", ""))):
+    parsed = parse_command(payload.get("prompt", "")) if event == "UserPromptSubmit" else None
+    if parsed and parsed[0] in READ_ONLY_COMMANDS:
+        return fn(payload, env, store, cwd)          # nothing to change: no lock, no files
+    if not parsed:
         saved = store.peek(cwd) if store.dir.is_dir() else None  # never used on this machine: no git at all
         if not saved or saved.get("enabled", "off") == "off":
             if event == "SessionStart":
