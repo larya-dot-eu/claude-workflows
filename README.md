@@ -156,6 +156,15 @@ You never type "read the workflow file" or "now do phase 4" — approving a gate
 | `standard` | Normal features (the default) | `/wf on` |
 | `strict` | Auth, payments, database schema, personal data, public APIs | `/wf on strict` |
 
+### Already have a status line?
+
+`/wf statusline` never replaces it. It **wraps** it: your command stays in `~/.claude/settings.json`
+word for word (so ponytail, caveman and similar plugins still recognise and update their own script
+there), runs first with the same input, and `[WF …]` is added after it — `🐴 ponytail [WF P3 · standard]`.
+Extra settings such as `padding` are kept. If your status line is slow (> 3 s) or fails, the WF badge
+still shows. `/wf statusline off` puts back exactly what you had. If a project sets its own status line
+in `.claude/settings.json`, that one wins inside the project — `/wf statusline` tells you.
+
 ### Good habits
 
 - **Once per machine:** `/wf default standard` and `/wf statusline` (so the phase is always under your
@@ -179,7 +188,7 @@ You never type "read the workflow file" or "now do phase 4" — approving a gate
 | `/wf default strict` | Default level for new projects on this machine |
 | `/wf status` · `/wf 5` · `/wf new` | Where am I · jump to a phase (loop-backs) · start a new feature |
 | `/wf dirs <spec> <plan>` | Your own spec/plan folders, if they aren't `docs/superpowers/specs|plans` or `docs/specs|plans` (inside a worktree the main checkout is searched too) |
-| `/wf statusline` · `/wf statusline off` | Show `[WF P4 · standard]` under your prompt — the plugin edits `~/.claude/settings.json` for you (backup first, other settings kept; an existing status line such as ponytail's is kept and shown first) · remove it again and restore yours |
+| `/wf statusline` · `/wf statusline off` | Show `[WF P4 · standard]` under your prompt — the plugin edits `~/.claude/settings.json` for you (backup first, other settings kept; an existing status line — ponytail's, caveman's or your own — is kept word for word and shown first) · remove it again and restore yours exactly |
 
 **Levels**
 

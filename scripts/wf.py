@@ -328,9 +328,37 @@ def claude_dir(env):
     return Path(env.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude"))
 
 
-def _statusline_command(env, chain):
+def _statusline_command(env, previous=None):
+    """Our status-line command. An existing one is wrapped, not hidden: its command text stays in
+    settings.json word for word, so the plugin that owns it (ponytail, caveman, …) still finds its
+    script there, and 'off' can restore it exactly."""
     script = shlex.quote(str(data_dir(env) / "statusline.py"))   # quoted: paths may contain spaces
-    return f"python3 {script} " + ("statusline-chain" if chain else "statusline")
+    if previous:
+        return f"python3 {script} statusline-chain {shlex.quote(previous)}"
+    return f"python3 {script} statusline"
+
+
+def _wrapped_command(command):
+    """The original command wrapped inside our chain command, or None."""
+    try:
+        words = shlex.split(command or "")
+    except ValueError:
+        return None
+    if "statusline-chain" in words and words.index("statusline-chain") + 1 < len(words):
+        return words[words.index("statusline-chain") + 1]
+    return None
+
+
+def _project_statusline(cwd):
+    """A status line set by this project's own settings (it wins over the user one), or None."""
+    root = Path(repo_root(cwd) or cwd) if cwd else None
+    for name in ("settings.local.json", "settings.json"):
+        try:
+            if root and json.loads((root / ".claude" / name).read_text()).get("statusLine"):
+                return root / ".claude" / name
+        except Exception:
+            pass
+    return None
 
 
 def _is_ours(statusline_setting):
@@ -371,7 +399,7 @@ def _backup(path):
     return b
 
 
-def statusline_install(env):
+def statusline_install(env, cwd=None):
     """Add the wf status line to Claude Code's user settings. Keeps every other setting, backs the
     file up first, and keeps an existing status line (e.g. ponytail) by showing both."""
     install_statusline(env)
@@ -384,20 +412,24 @@ def statusline_install(env):
         return "status line already installed — nothing changed. Remove it with /wf statusline off."
     backup = _backup(path)
     cfg = _plugin_config(env)
-    if current:
+    if current and current.get("command"):
         cfg["previous_statusline"] = current
-        data["statusLine"] = {"type": "command", "command": _statusline_command(env, chain=True)}
+        data["statusLine"] = dict(current, type="command",
+                                  command=_statusline_command(env, current["command"]))   # keeps padding etc.
         what = "installed next to your existing status line (kept, shown first)"
     else:
         cfg.pop("previous_statusline", None)
-        data["statusLine"] = {"type": "command", "command": _statusline_command(env, chain=False)}
+        data["statusLine"] = {"type": "command", "command": _statusline_command(env)}
         what = "installed"
     path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write(path, data, indent=2)
     _save_plugin_config(env, cfg)
+    override = _project_statusline(cwd)
+    note = (f" Note: this project sets its own status line in {override}, which wins over yours here — "
+            "the WF badge won't show in this project unless you remove it there." if override else "")
     return (f"status line {what} in {path}" + (f" (backup: {backup.name})" if backup else "") +
             ". You'll see [WF P3 · standard] under the prompt while the skin is on (new session if it "
-            "doesn't appear). Undo: /wf statusline off")
+            "doesn't appear). Undo: /wf statusline off." + note)
 
 
 def statusline_remove(env):
@@ -409,7 +441,16 @@ def statusline_remove(env):
         return "status line not installed — nothing changed."
     backup = _backup(path)
     cfg = _plugin_config(env)
-    previous = cfg.pop("previous_statusline", None)
+    saved = cfg.pop("previous_statusline", None)
+    current = data["statusLine"]
+    wrapped = _wrapped_command(current.get("command"))
+    if wrapped is not None:
+        # the command in settings.json is the truth (another plugin may have fixed its path inside it)
+        previous = dict(current, command=wrapped)
+        if saved and saved.get("command") == wrapped:
+            previous = saved
+    else:
+        previous = None
     if previous:
         data["statusLine"] = previous
     else:
@@ -420,9 +461,10 @@ def statusline_remove(env):
             (f" (backup: {backup.name})" if backup else "") + ".")
 
 
-def statusline_chain(raw_stdin, env):
+def statusline_chain(raw_stdin, env, previous=None):
     """Status line = the user's previous status line (same input), then ours."""
-    previous = (_plugin_config(env).get("previous_statusline") or {}).get("command")
+    if previous is None:
+        previous = (_plugin_config(env).get("previous_statusline") or {}).get("command")
     before = ""
     if previous:
         try:
@@ -487,7 +529,8 @@ HELP_TOPICS = {
                "  Example: /wf default standard",
     "statusline": "/wf statusline — once per machine: shows [WF P3 70% · ✓✓⚠ · standard] under the prompt.\n"
                   "  It edits ~/.claude/settings.json for you (backup first, other settings kept);\n"
-                  "  an existing status line (e.g. ponytail) is kept and shown first.\n"
+                  "  an existing status line (ponytail, caveman, your own) is kept word for word and\n"
+                  "  shown first.\n"
                   "  Example: /wf statusline   ·   /wf statusline off (removes it, restores yours)",
 }
 HELP_TOPICS.update({lvl: HELP_TOPICS["levels"] for lvl in LEVELS})
@@ -569,7 +612,7 @@ def run_command(cmd, args, state, store, env, cwd):
         cur = state.get("dirs") or {k: " or ".join(v) for k, v in DEFAULT_DIRS.items()}
         return None, f"{tell}spec folder {cur['spec']}, plan folder {cur['plan']}. Change: `/wf dirs <spec> <plan>`."
     if cmd == "statusline":
-        msg = statusline_remove(env) if args[:1] == ["off"] else statusline_install(env)
+        msg = statusline_remove(env) if args[:1] == ["off"] else statusline_install(env, cwd)
         return None, tell + msg
     if cmd == "phase":
         n = int(args[0])
@@ -1321,7 +1364,10 @@ def main(argv):
         if event in ("statusline", "statusline-chain"):
             # The status line runs outside the plugin: our state dir is this script's own dir.
             env.setdefault("CLAUDE_PLUGIN_DATA", str(Path(__file__).resolve().parent))
-            line = statusline_chain(raw, env) if event == "statusline-chain" else statusline(json.loads(raw or "{}"), env)
+            if event == "statusline-chain":
+                line = statusline_chain(raw, env, argv[2] if len(argv) > 2 else None)
+            else:
+                line = statusline(json.loads(raw or "{}"), env)
             print(line, end="")
             return
         payload = json.loads(raw or "{}")

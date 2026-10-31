@@ -5,6 +5,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -1285,7 +1286,7 @@ class TestShortHint(unittest.TestCase):
 
 # ================================================================ /wf statusline installs itself
 
-class TestStatuslineInstall2(unittest.TestCase):
+class StatuslineCase(unittest.TestCase):
     def setUp(self):
         self.e = Env()
         self.claude = Path(self.e.tmp.name) / "claude-home"
@@ -1302,6 +1303,8 @@ class TestStatuslineInstall2(unittest.TestCase):
                            capture_output=True, text=True, env={"PATH": os.environ["PATH"]})
         return p.stdout
 
+
+class TestStatuslineInstall2(StatuslineCase):
     def test_installs_into_missing_settings(self):
         out = self.e.prompt("/wf statusline")
         self.assertIn("installed", shown(out))
@@ -1357,4 +1360,70 @@ class TestStatuslineInstall2(unittest.TestCase):
         self.settings.write_text(json.dumps({"statusLine": {"type": "command", "command": "printf PONY"}}))
         out = self.e.prompt("/wf statusline off")
         self.assertIn("printf PONY", self.settings.read_text())
+        self.assertIn("not installed", shown(out).lower())
+
+
+class TestStatuslineCoexistence(StatuslineCase):
+    """Other plugins (ponytail, caveman) look for their own script in statusLine.command every session."""
+
+    PONY = 'bash "/home/u/.claude/ponytail-statusline.sh"'
+
+    def install_over(self, statusline):
+        self.settings.write_text(json.dumps({"statusLine": statusline}))
+        self.e.prompt("/wf statusline")
+        return json.loads(self.settings.read_text())["statusLine"]
+
+    def test_existing_command_stays_visible_to_its_plugin(self):
+        new = self.install_over({"type": "command", "command": self.PONY})
+        # ponytail's own detection regex (hooks/ponytail-activate.js) must still find its script
+        m = re.search(r'"([^"]*ponytail-statusline\.(?:sh|ps1))"|(\S*ponytail-statusline\.(?:sh|ps1))', new["command"])
+        self.assertEqual(m.group(1) or m.group(2), "/home/u/.claude/ponytail-statusline.sh")
+
+    def test_caveman_path_stays_visible(self):
+        new = self.install_over({"type": "command", "command": 'bash "/h/.claude/hooks/caveman-statusline.sh"'})
+        self.assertIn('"/h/.claude/hooks/caveman-statusline.sh"', new["command"])
+
+    def test_extra_keys_kept_and_restored_exactly(self):
+        original = {"type": "command", "command": "printf PONY", "padding": 2, "refreshInterval": 5}
+        new = self.install_over(original)
+        self.assertEqual((new.get("padding"), new.get("refreshInterval")), (2, 5))
+        self.e.prompt("/wf statusline off")
+        self.assertEqual(json.loads(self.settings.read_text())["statusLine"], original)
+
+    def test_off_works_even_if_plugin_config_is_lost(self):
+        original = {"type": "command", "command": "printf PONY"}
+        self.install_over(original)
+        (self.e.data / "config.json").unlink()
+        self.e.prompt("/wf statusline off")
+        self.assertEqual(json.loads(self.settings.read_text())["statusLine"], original)
+
+    def test_shell_features_of_the_original_still_work(self):
+        self.install_over({"type": "command",
+                           "command": """printf '%s' "it's" >/dev/null; v=PO; printf "${v}NY" """})
+        self.e.prompt("/wf on")
+        self.assertEqual(self.run_statusline(), "PONY [WF P– · standard]")
+
+    def test_slow_previous_status_line_does_not_hide_ours(self):
+        self.install_over({"type": "command", "command": "sleep 10; printf LATE"})
+        self.e.prompt("/wf on")
+        t = time.time()
+        self.assertEqual(self.run_statusline(), "[WF P– · standard]")
+        self.assertLess(time.time() - t, 6)
+
+    def test_failing_previous_status_line_does_not_hide_ours(self):
+        self.install_over({"type": "command", "command": "exit 3"})
+        self.e.prompt("/wf on")
+        self.assertEqual(self.run_statusline(), "[WF P– · standard]")
+
+    def test_project_status_line_override_is_reported(self):
+        (self.e.repo / ".claude").mkdir()
+        (self.e.repo / ".claude" / "settings.json").write_text(json.dumps({"statusLine": {"type": "command", "command": "x"}}))
+        out = self.e.prompt("/wf statusline")
+        self.assertIn("this project", shown(out).lower())
+
+    def test_off_after_another_tool_replaced_it(self):
+        self.install_over({"type": "command", "command": "printf PONY"})
+        self.settings.write_text(json.dumps({"statusLine": {"type": "command", "command": "printf OTHER"}}))
+        out = self.e.prompt("/wf statusline off")
+        self.assertIn("printf OTHER", self.settings.read_text())
         self.assertIn("not installed", shown(out).lower())
