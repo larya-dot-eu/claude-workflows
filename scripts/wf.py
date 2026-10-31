@@ -836,19 +836,50 @@ def _hits_default(ref, branch):
     return ref in DEFAULT_BRANCHES
 
 
+def _segments(command):
+    """Shell command split into the simple commands it runs, in order (&&, ||, ;, |, newlines)."""
+    return [seg.strip() for seg in re.split(r"&&|\|\||[;|\n]", command or "") if seg.strip()]
+
+
+def _branch_after(seg, branch):
+    """The branch checked out after this simple command (follows `git checkout/switch`)."""
+    m = re.search(_GIT + r"(checkout|switch)\b(.*)", seg)
+    if not m:
+        return branch
+    words = m.group(2).split()
+    if "--" in words or not words:                       # `git checkout main -- file`: restores a file only
+        return branch
+    for flag in ("-b", "-B", "-c", "-C", "--orphan"):     # creates a new branch
+        if flag in words and words.index(flag) + 1 < len(words):
+            return words[words.index(flag) + 1]
+    args = [w for w in words if not w.startswith("-")]
+    return args[0] if args else branch
+
+
 def guard_reason(command, branch):
-    """Why this shell command would integrate into the default branch, or '' if it wouldn't."""
-    c = command or ""
+    """Why this shell command would change the default branch directly, or '' if it wouldn't.
+    Follows branch switches inside the command (`git checkout main && git merge feat`)."""
+    for seg in _segments(command):
+        reason = _segment_reason(seg, branch)
+        if reason:
+            return reason
+        branch = _branch_after(seg, branch)
+    return ""
+
+
+def _segment_reason(c, branch):
     on_default = branch in DEFAULT_BRANCHES
     if re.search(r"\bgh\s+pr\s+merge\b", c):
         return "`gh pr merge` merges a pull request"
     if on_default and re.search(_GIT + r"merge(?![-\w])", c):
-        return f"`git merge` while on `{branch}` merges into the default branch"
-    for m in re.finditer(_GIT + r"pull\b([^;&|\n]*)", c):
+        return f"`git merge` on `{branch}` merges into the default branch"
+    if on_default and re.search(_GIT + r"commit\b", c):
+        return f"`git commit` on `{branch}` commits straight to the default branch (work on a branch)"
+    for m in re.finditer(_GIT + r"pull\b(.*)", c):
         refs = [a for a in m.group(1).split() if not a.startswith("-")][1:]
         if on_default and refs and not all(_hits_default(r, branch) for r in refs):
-            return f"`git pull` of another branch while on `{branch}` merges it into the default branch"
-    for m in re.finditer(_GIT + r"push\b([^;&|\n]*)", c):
+            return f"`git pull` of another branch on `{branch}` merges it into the default branch"
+    for m in re.finditer(_GIT + r"push\b(.*)", c):
         words = m.group(1).split()
         if "--all" in words or "--mirror" in words:
             return "`git push --all/--mirror` pushes the default branch too"
@@ -856,7 +887,7 @@ def guard_reason(command, branch):
         if any(_hits_default(r, branch) for r in refs):
             return "`git push` to the default branch"
         if not refs and on_default:
-            return f"`git push` while on `{branch}` pushes the default branch"
+            return f"`git push` on `{branch}` pushes the default branch"
     return ""
 
 
@@ -868,8 +899,8 @@ def on_bash(payload, env, store, cwd):
     if not reason:
         return None
     strict = state["level"] == "strict" and (state["phase"] is None or state["phase"] < 10)
-    why = (f"Workflow merge guard: {reason}. Changes land through a PR, and merging is the last step of "
-           f"Phase 10 (after deploy + health check).")
+    why = (f"Workflow merge guard: {reason}. Work happens on a branch, changes land through a PR, and "
+           f"merging is the last step of Phase 10 (after deploy + health check).")
     if strict:
         why += " Strict level blocks this before Phase 10; the user can `/wf 10` or `/wf standard` to allow it."
     return {"hookSpecificOutput": {"hookEventName": "PreToolUse",

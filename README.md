@@ -167,8 +167,10 @@ haven't happened — and `finishing-a-development-branch` is held until Phases 8
 the override block from the full doc's *Running on Superpowers* section in your `CLAUDE.md`:
 Superpowers only guarantees that `CLAUDE.md` outranks its skills.
 
-**Merge guard.** While the skin is on, `git merge` on main/master, `git push` to main/master and
-`gh pr merge` ask you first (`strict`: blocked until Phase 10).
+**Merge guard.** While the skin is on, `git merge`, `git commit` or `git pull <other branch>` on main/master,
+`git push` to main/master and `gh pr merge` ask you first (`strict`: blocked until Phase 10). It follows
+branch switches inside one command (`git checkout main && git merge feat`), so Superpowers'
+*merge locally* option is caught too.
 
 **Several machines.** The phase is remembered on the machine you're using, per repo and branch —
 nothing is added to your project. On another machine, `/wf on` guesses the phase from your spec and

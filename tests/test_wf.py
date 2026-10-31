@@ -1085,3 +1085,26 @@ class TestStartPhase(EngineCase):
         doc = (ROOT / "Claude-Workflows-Best-Practices.md").read_text()
         self.assertNotIn('execution starts only when I say "start Phase 7"', doc)
         self.assertIn("approving the Phase 6 gate", doc)
+
+
+class TestGuardSequences(unittest.TestCase):
+    def test_switch_to_default_inside_one_command(self):
+        for cmd in ["git checkout main && git pull && git merge feat",
+                    "git switch master; git merge feat",
+                    "cd /repo && git checkout main\ngit merge --no-ff feat",
+                    "git checkout main && git pull origin feat"]:
+            self.assertTrue(wf.guard_reason(cmd, "feat"), cmd)
+
+    def test_commit_on_default_branch(self):
+        self.assertTrue(wf.guard_reason("git add docs && git commit -m spec", "main"))
+        self.assertTrue(wf.guard_reason("git checkout main && git commit -am x", "feat"))
+        self.assertIn("commit", wf.guard_reason("git commit -m x", "master"))
+
+    def test_still_allowed(self):
+        for cmd, br in [("git checkout -b feat && git commit -m x", "main"),
+                        ("git switch -c feat; git commit -m x", "main"),
+                        ("git checkout main -- README.md && git commit -m restore", "feat"),
+                        ("git commit -m x", "feat"),
+                        ("git checkout main && git log", "feat"),
+                        ("git checkout main && git checkout -b fix && git merge feat", "feat")]:
+            self.assertFalse(wf.guard_reason(cmd, br), (cmd, br))
