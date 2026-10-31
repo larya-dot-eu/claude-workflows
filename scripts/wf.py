@@ -234,11 +234,11 @@ class Store:
             yield
 
 
-def _atomic_write(path, obj):
+def _atomic_write(path, obj, indent=1):
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp-")
     try:
         with os.fdopen(fd, "w") as f:
-            json.dump(obj, f, indent=1) if not isinstance(obj, bytes) else f.buffer.write(obj)
+            json.dump(obj, f, indent=indent) if not isinstance(obj, bytes) else f.buffer.write(obj)
         os.replace(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError):
@@ -324,13 +324,117 @@ def phase_context(n, env, cwd, budget=LIMIT):
             "now with the Read tool (just that range), before continuing." + rule)
 
 
-def statusline_snippet(env):
-    script = data_dir(env) / "statusline.py"
-    cmd = "python3 %s statusline" % shlex.quote(str(script))   # quoted: paths may contain spaces
-    return ('Add this to ~/.claude/settings.json (it shows `[WF P4 · standard]` while the skin is on):\n'
-            '```json\n"statusLine": {"type": "command", "command": %s}\n```\n'
-            'If you already have a status line (e.g. ponytail), keep it and append the wf output: '
-            '`<your command>; %s`.' % (json.dumps(cmd, ensure_ascii=False), cmd))
+def claude_dir(env):
+    return Path(env.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude"))
+
+
+def _statusline_command(env, chain):
+    script = shlex.quote(str(data_dir(env) / "statusline.py"))   # quoted: paths may contain spaces
+    return f"python3 {script} " + ("statusline-chain" if chain else "statusline")
+
+
+def _is_ours(statusline_setting):
+    return "statusline.py statusline" in str((statusline_setting or {}).get("command", ""))
+
+
+def _plugin_config(env):
+    try:
+        return json.loads((data_dir(env) / "config.json").read_text())
+    except Exception:
+        return {}
+
+
+def _save_plugin_config(env, cfg):
+    p = data_dir(env) / "config.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write(p, cfg)
+
+
+def _read_settings(path):
+    """(settings dict, error) — never guesses at a file it can't parse."""
+    if not path.exists():
+        return {}, None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None, f"{path} isn't plain JSON (comments or a typo?) — not changed"
+    if not isinstance(data, dict):
+        return None, f"{path} isn't a JSON object — not changed"
+    return data, None
+
+
+def _backup(path):
+    if not path.exists():
+        return None
+    b = path.with_name(path.name + time.strftime(".wf-backup-%Y%m%d-%H%M%S"))
+    b.write_bytes(path.read_bytes())
+    return b
+
+
+def statusline_install(env):
+    """Add the wf status line to Claude Code's user settings. Keeps every other setting, backs the
+    file up first, and keeps an existing status line (e.g. ponytail) by showing both."""
+    install_statusline(env)
+    path = claude_dir(env) / "settings.json"
+    data, err = _read_settings(path)
+    if err:
+        return f"status line {err}. Nothing else was touched."
+    current = data.get("statusLine")
+    if _is_ours(current):
+        return "status line already installed — nothing changed. Remove it with /wf statusline off."
+    backup = _backup(path)
+    cfg = _plugin_config(env)
+    if current:
+        cfg["previous_statusline"] = current
+        data["statusLine"] = {"type": "command", "command": _statusline_command(env, chain=True)}
+        what = "installed next to your existing status line (kept, shown first)"
+    else:
+        cfg.pop("previous_statusline", None)
+        data["statusLine"] = {"type": "command", "command": _statusline_command(env, chain=False)}
+        what = "installed"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write(path, data, indent=2)
+    _save_plugin_config(env, cfg)
+    return (f"status line {what} in {path}" + (f" (backup: {backup.name})" if backup else "") +
+            ". You'll see [WF P3 · standard] under the prompt while the skin is on (new session if it "
+            "doesn't appear). Undo: /wf statusline off")
+
+
+def statusline_remove(env):
+    path = claude_dir(env) / "settings.json"
+    data, err = _read_settings(path)
+    if err:
+        return f"status line {err}."
+    if not _is_ours(data.get("statusLine")):
+        return "status line not installed — nothing changed."
+    backup = _backup(path)
+    cfg = _plugin_config(env)
+    previous = cfg.pop("previous_statusline", None)
+    if previous:
+        data["statusLine"] = previous
+    else:
+        data.pop("statusLine", None)
+    _atomic_write(path, data, indent=2)
+    _save_plugin_config(env, cfg)
+    return ("status line removed" + (", your previous one is back" if previous else "") +
+            (f" (backup: {backup.name})" if backup else "") + ".")
+
+
+def statusline_chain(raw_stdin, env):
+    """Status line = the user's previous status line (same input), then ours."""
+    previous = (_plugin_config(env).get("previous_statusline") or {}).get("command")
+    before = ""
+    if previous:
+        try:
+            before = subprocess.run(previous, shell=True, input=raw_stdin, capture_output=True, text=True,
+                                    timeout=3).stdout.rstrip("\n")
+        except Exception:
+            before = ""
+    try:
+        ours = statusline(json.loads(raw_stdin or "{}"), env)
+    except Exception:
+        ours = ""
+    return " ".join(x for x in (before, ours) if x)
 
 
 # ---------------------------------------------------------------- /wf help (shown to the user only)
@@ -381,9 +485,10 @@ HELP_TOPICS = {
             "  Example: /wf dirs design/specs design/plans   ·   /wf dirs (show current)",
     "default": "/wf default <level> — the level /wf on uses on this machine.\n"
                "  Example: /wf default standard",
-    "statusline": "/wf statusline — prints the line to add to ~/.claude/settings.json once per\n"
-                  "  machine, so you always see [WF P3 70% · ✓✓⚠ · standard] under the prompt.\n"
-                  "  Example: /wf statusline",
+    "statusline": "/wf statusline — once per machine: shows [WF P3 70% · ✓✓⚠ · standard] under the prompt.\n"
+                  "  It edits ~/.claude/settings.json for you (backup first, other settings kept);\n"
+                  "  an existing status line (e.g. ponytail) is kept and shown first.\n"
+                  "  Example: /wf statusline   ·   /wf statusline off (removes it, restores yours)",
 }
 HELP_TOPICS.update({lvl: HELP_TOPICS["levels"] for lvl in LEVELS})
 HELP_TOPICS.update({"approve": HELP_TOPICS["gate"], "approved": HELP_TOPICS["gate"]})
@@ -464,7 +569,8 @@ def run_command(cmd, args, state, store, env, cwd):
         cur = state.get("dirs") or {k: " or ".join(v) for k, v in DEFAULT_DIRS.items()}
         return None, f"{tell}spec folder {cur['spec']}, plan folder {cur['plan']}. Change: `/wf dirs <spec> <plan>`."
     if cmd == "statusline":
-        return None, "Show the user this, verbatim:\n\n" + statusline_snippet(env)
+        msg = statusline_remove(env) if args[:1] == ["off"] else statusline_install(env)
+        return None, tell + msg
     if cmd == "phase":
         n = int(args[0])
         if not 0 <= n <= 10:
@@ -1098,6 +1204,8 @@ def on_prompt(payload, env, store, cwd):
         cmd, args = parsed
         if cmd == "help":
             show = help_text(args[0] if args else None)
+        elif cmd == "statusline":
+            show = text.split(": ", 1)[1]
         elif text.startswith("Show the user in one line: unknown"):
             show = f"unknown command '/wf {cmd}'. Type /wf help for the everyday commands."
         else:
@@ -1209,12 +1317,14 @@ def main(argv):
     event = argv[1] if len(argv) > 1 else ""
     env = dict(os.environ)
     try:
-        payload = json.loads(sys.stdin.read() or "{}")
-        if event == "statusline":
+        raw = sys.stdin.read()
+        if event in ("statusline", "statusline-chain"):
             # The status line runs outside the plugin: our state dir is this script's own dir.
             env.setdefault("CLAUDE_PLUGIN_DATA", str(Path(__file__).resolve().parent))
-            print(statusline(payload, env), end="")
+            line = statusline_chain(raw, env) if event == "statusline-chain" else statusline(json.loads(raw or "{}"), env)
+            print(line, end="")
             return
+        payload = json.loads(raw or "{}")
         out = handle(event, payload, env)
         if out:
             print(json.dumps(out))

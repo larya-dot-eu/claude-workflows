@@ -158,8 +158,8 @@ You never type "read the workflow file" or "now do phase 4" — approving a gate
 
 ### Good habits
 
-- **Once per machine:** `/wf default standard` and `/wf statusline` (add the printed line to
-  `~/.claude/settings.json`, so the phase is always under your prompt).
+- **Once per machine:** `/wf default standard` and `/wf statusline` (so the phase is always under your
+  prompt — no manual editing; `/wf statusline off` undoes it).
 - **One feature, one `/wf new`** (brainstorming does it for you). On a feature branch it becomes its own feature.
 - **Read the "missing:" list before you approve.** The % shows what was *addressed*, not whether it's good.
 - **`/wf pause` for detours** (a spike, a side question, an unrelated fix), then `/wf resume` — not
@@ -179,7 +179,7 @@ You never type "read the workflow file" or "now do phase 4" — approving a gate
 | `/wf default strict` | Default level for new projects on this machine |
 | `/wf status` · `/wf 5` · `/wf new` | Where am I · jump to a phase (loop-backs) · start a new feature |
 | `/wf dirs <spec> <plan>` | Your own spec/plan folders, if they aren't `docs/superpowers/specs|plans` or `docs/specs|plans` (inside a worktree the main checkout is searched too) |
-| `/wf statusline` | Prints the one line to add to `~/.claude/settings.json` to see `[WF P4 · standard]` |
+| `/wf statusline` · `/wf statusline off` | Show `[WF P4 · standard]` under your prompt — the plugin edits `~/.claude/settings.json` for you (backup first, other settings kept; an existing status line such as ponytail's is kept and shown first) · remove it again and restore yours |
 
 **Levels**
 
