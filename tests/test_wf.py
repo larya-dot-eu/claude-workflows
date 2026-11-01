@@ -1378,7 +1378,7 @@ class TestShortHint(unittest.TestCase):
     def test_hint_is_short(self):
         front = (ROOT / "skills/wf/SKILL.md").read_text().split("---")[1]
         hint = re.search(r'argument-hint:\s*"(.*)"', front).group(1)
-        self.assertEqual(hint, "[on | off | pause | status | help]")
+        self.assertEqual(hint, "[on | ok | off | pause | status | help]")
 
     def test_plugin_version_matches_readme(self):
         version = json.loads((ROOT / ".claude-plugin/plugin.json").read_text())["version"]
