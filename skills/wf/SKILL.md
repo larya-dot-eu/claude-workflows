@@ -2,7 +2,7 @@
 name: wf
 description: Controls the Claude-Workflows skin. Use only when the user types /wf.
 disable-model-invocation: true
-argument-hint: "[on|off|pause|resume|lite|standard|strict|status|new|0-10|default <level>|dirs <spec> <plan>|statusline]"
+argument-hint: "[on | off | pause | status | help]"
 ---
 
 The wf hook has already applied `/wf $ARGUMENTS`; its result is in the context just added to this

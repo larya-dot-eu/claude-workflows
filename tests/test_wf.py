@@ -5,6 +5,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -222,13 +223,6 @@ class TestStatusline(unittest.TestCase):
         finally:
             e.close()
 
-    def test_statusline_command_prints_snippet(self):
-        e = Env()
-        try:
-            out = e.prompt("/wf statusline")
-            self.assertIn('"statusLine"', ctx(out))
-        finally:
-            e.close()
 
 
 class TestStatuslineInstall(unittest.TestCase):
@@ -953,14 +947,14 @@ class TestCheapWhenOff(unittest.TestCase):
 
 
 class TestStatuslineSnippetQuoting(unittest.TestCase):
-    def test_snippet_command_runs_with_space_in_path(self):
+    def test_installed_command_runs_with_space_in_path(self):
         e = Env()
         try:
             e.env["CLAUDE_PLUGIN_DATA"] = str(Path(e.tmp.name) / "my data")
+            e.env["CLAUDE_CONFIG_DIR"] = str(Path(e.tmp.name) / "claude home")
             e.prompt("/wf on")
-            text = ctx(e.prompt("/wf statusline"))
-            snippet = json.loads("{" + re.search(r'("statusLine": \{.*?\})', text).group(1) + "}")
-            cmd = snippet["statusLine"]["command"]
+            e.prompt("/wf statusline")
+            cmd = json.loads((Path(e.env["CLAUDE_CONFIG_DIR"]) / "settings.json").read_text())["statusLine"]["command"]
             p = subprocess.run(cmd, shell=True, input=json.dumps({"workspace": {"current_dir": str(e.repo)}}),
                                capture_output=True, text=True)
             self.assertEqual((p.returncode, p.stdout), (0, "[WF P– · standard]"), p.stderr)
@@ -1238,3 +1232,198 @@ class TestExecutorReminderMatchesDocs(EngineCase):
             self.assertIn(item, text)
         doc = (ROOT / "Claude-Workflows-Best-Practices.md").read_text()
         self.assertIn('"no reachable spec"', doc)
+
+
+# ================================================================ /wf help
+
+class TestHelp(unittest.TestCase):
+    def setUp(self):
+        self.e = Env()
+
+    def tearDown(self):
+        self.e.close()
+
+    def test_help_shows_everyday_guide_in_terminal(self):
+        out = self.e.prompt("/wf help")
+        text = shown(out)
+        for cmd in ("/wf on", "/wf pause", "/wf status", "/wf off", "approved", "/wf help strict"):
+            self.assertIn(cmd, text)
+        self.assertNotIn(text.splitlines()[1], ctx(out))   # the guide is shown, not sent to Claude
+
+    def test_help_changes_nothing_and_creates_no_state(self):
+        self.e.prompt("/wf help")
+        self.assertFalse((self.e.data / "state").exists())
+
+    def test_every_command_has_a_topic_with_an_example(self):
+        for topic in ("on", "off", "pause", "resume", "status", "lite", "standard", "strict", "new",
+                      "phase", "dirs", "default", "statusline", "gate", "levels"):
+            text = shown(self.e.prompt(f"/wf help {topic}"))
+            self.assertIn("Example", text, topic)
+            self.assertLess(len(text.splitlines()), 9, topic)
+
+    def test_help_number_means_phase_topic(self):
+        self.assertIn("go back", shown(self.e.prompt("/wf help 4")).lower())
+
+    def test_unknown_command_shows_help_in_terminal(self):
+        out = self.e.prompt("/wf banana")
+        self.assertIn("unknown", shown(out).lower())
+        self.assertIn("/wf help", shown(out))
+
+    def test_unknown_topic(self):
+        self.assertIn("/wf help", shown(self.e.prompt("/wf help xyz")))
+
+
+class TestShortHint(unittest.TestCase):
+    def test_hint_is_short(self):
+        front = (ROOT / "skills/wf/SKILL.md").read_text().split("---")[1]
+        hint = re.search(r'argument-hint:\s*"(.*)"', front).group(1)
+        self.assertEqual(hint, "[on | off | pause | status | help]")
+
+    def test_plugin_version_matches_readme(self):
+        version = json.loads((ROOT / ".claude-plugin/plugin.json").read_text())["version"]
+        self.assertIn(f"**Version:** v{version}", (ROOT / "README.md").read_text())
+
+
+# ================================================================ /wf statusline installs itself
+
+class StatuslineCase(unittest.TestCase):
+    def setUp(self):
+        self.e = Env()
+        self.claude = Path(self.e.tmp.name) / "claude-home"
+        self.claude.mkdir()
+        self.e.env["CLAUDE_CONFIG_DIR"] = str(self.claude)
+        self.settings = self.claude / "settings.json"
+
+    def tearDown(self):
+        self.e.close()
+
+    def run_statusline(self):
+        cmd = json.loads(self.settings.read_text())["statusLine"]["command"]
+        p = subprocess.run(cmd, shell=True, input=json.dumps({"workspace": {"current_dir": str(self.e.repo)}}),
+                           capture_output=True, text=True, env={"PATH": os.environ["PATH"]})
+        return p.stdout
+
+
+class TestStatuslineInstall2(StatuslineCase):
+    def test_installs_into_missing_settings(self):
+        out = self.e.prompt("/wf statusline")
+        self.assertIn("installed", shown(out))
+        self.assertNotIn("no phase yet", shown(out))
+        self.e.prompt("/wf on")
+        self.assertEqual(self.run_statusline(), "[WF P– · standard]")
+
+    def test_keeps_other_settings_and_backs_up(self):
+        self.settings.write_text(json.dumps({"model": "opus", "permissions": {"allow": ["Bash(ls)"]}}, indent=2))
+        out = self.e.prompt("/wf statusline")
+        data = json.loads(self.settings.read_text())
+        self.assertEqual((data["model"], data["permissions"]), ("opus", {"allow": ["Bash(ls)"]}))
+        backups = list(self.claude.glob("settings.json.wf-backup-*"))
+        self.assertEqual(len(backups), 1)
+        self.assertIn(backups[0].name, shown(out))
+
+    def test_chains_an_existing_status_line(self):
+        self.settings.write_text(json.dumps({"statusLine": {"type": "command", "command": "printf PONY"}}))
+        out = self.e.prompt("/wf statusline")
+        self.assertIn("kept", shown(out).lower())
+        self.e.prompt("/wf on")
+        self.assertEqual(self.run_statusline(), "PONY [WF P– · standard]")
+
+    def test_running_twice_does_not_chain_itself(self):
+        self.settings.write_text(json.dumps({"statusLine": {"type": "command", "command": "printf PONY"}}))
+        self.e.prompt("/wf statusline")
+        self.e.prompt("/wf statusline")
+        self.e.prompt("/wf on")
+        self.assertEqual(self.run_statusline(), "PONY [WF P– · standard]")
+        self.assertEqual(len(list(self.claude.glob("settings.json.wf-backup-*"))), 1)
+
+    def test_invalid_settings_are_never_touched(self):
+        self.settings.write_text("{ not json, // a comment")
+        out = self.e.prompt("/wf statusline")
+        self.assertEqual(self.settings.read_text(), "{ not json, // a comment")
+        self.assertIn("not changed", shown(out).lower())
+
+    def test_off_restores_the_previous_status_line(self):
+        self.settings.write_text(json.dumps({"model": "opus", "statusLine": {"type": "command", "command": "printf PONY"}}))
+        self.e.prompt("/wf statusline")
+        out = self.e.prompt("/wf statusline off")
+        data = json.loads(self.settings.read_text())
+        self.assertEqual(data, {"model": "opus", "statusLine": {"type": "command", "command": "printf PONY"}})
+        self.assertIn("removed", shown(out).lower())
+
+    def test_off_without_previous_removes_the_key(self):
+        self.settings.write_text(json.dumps({"model": "opus"}))
+        self.e.prompt("/wf statusline")
+        self.e.prompt("/wf statusline off")
+        self.assertEqual(json.loads(self.settings.read_text()), {"model": "opus"})
+
+    def test_off_when_not_installed_changes_nothing(self):
+        self.settings.write_text(json.dumps({"statusLine": {"type": "command", "command": "printf PONY"}}))
+        out = self.e.prompt("/wf statusline off")
+        self.assertIn("printf PONY", self.settings.read_text())
+        self.assertIn("not installed", shown(out).lower())
+
+
+class TestStatuslineCoexistence(StatuslineCase):
+    """Other plugins (ponytail, caveman) look for their own script in statusLine.command every session."""
+
+    PONY = 'bash "/home/u/.claude/ponytail-statusline.sh"'
+
+    def install_over(self, statusline):
+        self.settings.write_text(json.dumps({"statusLine": statusline}))
+        self.e.prompt("/wf statusline")
+        return json.loads(self.settings.read_text())["statusLine"]
+
+    def test_existing_command_stays_visible_to_its_plugin(self):
+        new = self.install_over({"type": "command", "command": self.PONY})
+        # ponytail's own detection regex (hooks/ponytail-activate.js) must still find its script
+        m = re.search(r'"([^"]*ponytail-statusline\.(?:sh|ps1))"|(\S*ponytail-statusline\.(?:sh|ps1))', new["command"])
+        self.assertEqual(m.group(1) or m.group(2), "/home/u/.claude/ponytail-statusline.sh")
+
+    def test_caveman_path_stays_visible(self):
+        new = self.install_over({"type": "command", "command": 'bash "/h/.claude/hooks/caveman-statusline.sh"'})
+        self.assertIn('"/h/.claude/hooks/caveman-statusline.sh"', new["command"])
+
+    def test_extra_keys_kept_and_restored_exactly(self):
+        original = {"type": "command", "command": "printf PONY", "padding": 2, "refreshInterval": 5}
+        new = self.install_over(original)
+        self.assertEqual((new.get("padding"), new.get("refreshInterval")), (2, 5))
+        self.e.prompt("/wf statusline off")
+        self.assertEqual(json.loads(self.settings.read_text())["statusLine"], original)
+
+    def test_off_works_even_if_plugin_config_is_lost(self):
+        original = {"type": "command", "command": "printf PONY"}
+        self.install_over(original)
+        (self.e.data / "config.json").unlink()
+        self.e.prompt("/wf statusline off")
+        self.assertEqual(json.loads(self.settings.read_text())["statusLine"], original)
+
+    def test_shell_features_of_the_original_still_work(self):
+        self.install_over({"type": "command",
+                           "command": """printf '%s' "it's" >/dev/null; v=PO; printf "${v}NY" """})
+        self.e.prompt("/wf on")
+        self.assertEqual(self.run_statusline(), "PONY [WF P– · standard]")
+
+    def test_slow_previous_status_line_does_not_hide_ours(self):
+        self.install_over({"type": "command", "command": "sleep 10; printf LATE"})
+        self.e.prompt("/wf on")
+        t = time.time()
+        self.assertEqual(self.run_statusline(), "[WF P– · standard]")
+        self.assertLess(time.time() - t, 6)
+
+    def test_failing_previous_status_line_does_not_hide_ours(self):
+        self.install_over({"type": "command", "command": "exit 3"})
+        self.e.prompt("/wf on")
+        self.assertEqual(self.run_statusline(), "[WF P– · standard]")
+
+    def test_project_status_line_override_is_reported(self):
+        (self.e.repo / ".claude").mkdir()
+        (self.e.repo / ".claude" / "settings.json").write_text(json.dumps({"statusLine": {"type": "command", "command": "x"}}))
+        out = self.e.prompt("/wf statusline")
+        self.assertIn("this project", shown(out).lower())
+
+    def test_off_after_another_tool_replaced_it(self):
+        self.install_over({"type": "command", "command": "printf PONY"})
+        self.settings.write_text(json.dumps({"statusLine": {"type": "command", "command": "printf OTHER"}}))
+        out = self.e.prompt("/wf statusline off")
+        self.assertIn("printf OTHER", self.settings.read_text())
+        self.assertIn("not installed", shown(out).lower())

@@ -3,7 +3,7 @@
 A single, battle-tested process file for using an AI coding agent (Claude Code, Cursor, etc.) on real
 features without shipping self-inflicted outages or security holes.
 
-**Version:** v2.0.1 — the workflow as an invisible Claude Code plugin (`/wf on`). Previous: [v1.2.0](https://github.com/larya-dot-eu/claude-workflows/releases/tag/v1.2.0) — see [Releases](https://github.com/larya-dot-eu/claude-workflows/releases) for changelog.
+**Version:** v2.0.2 — the workflow as an invisible Claude Code plugin (`/wf on`), now with `/wf help` and a one-command status line. Previous: [v2.0.1](https://github.com/larya-dot-eu/claude-workflows/releases/tag/v2.0.1) — see [Releases](https://github.com/larya-dot-eu/claude-workflows/releases) for changelog.
 
 **→ [`Claude-Workflows-Best-Practices.md`](./Claude-Workflows-Best-Practices.md)**
 
@@ -97,10 +97,13 @@ The compact file is enough to hold the discipline; the full file is enough to ex
 ## The `wf` plugin — the workflow as an invisible skin (recommended)
 
 Instead of prompting *"read Claude-Workflows-Best-Practices.md and let's do phase 4"* every time, switch
-the skin on once and just answer the gates. It works like [ponytail](https://github.com/DietrichGebert/ponytail):
-off until you turn it on, a level you choose, a status line that shows where you are.
+the skin on once and just answer the gates: off until you turn it on, a level you choose, a status
+line that shows where you are.
 
-**Install — once per machine** (Linux; needs `python3` and `git`, nothing else):
+### Install, check, update, remove
+
+**Install — once per machine** (Linux; needs `python3` ≥ 3.8 and `git`, nothing else). In Claude Code,
+send these as two separate prompts (in a terminal, the same commands work as `claude plugin …`):
 
 ```
 /plugin marketplace add larya-dot-eu/claude-workflows
@@ -109,12 +112,75 @@ off until you turn it on, a level you choose, a status line that shows where you
 /plugin install wf@claude-workflows
 ```
 
-(Send them as two separate prompts.) Update later with `claude plugin update wf@claude-workflows`.
+Then start a new session (or run `/reload-plugins`) so the hooks load.
 
-**Use it**
+- **Check it's installed:** `/plugin` (or `claude plugin list`) shows `wf@claude-workflows · enabled`, and
+  `/wf help` answers in your terminal. Installing changes nothing yet — the skin stays off until `/wf on`.
+- **Update:** `claude plugin update wf@claude-workflows`, then a new session. To get updates
+  automatically, turn on auto-update for the `claude-workflows` marketplace in `/plugin` → Marketplaces.
+- **Remove:** `claude plugin uninstall wf@claude-workflows` (or disable it in `/plugin`). Its memory of
+  phases lives in `~/.claude/plugins/data/wf-claude-workflows/` — delete that folder to forget everything.
+- **Nothing happens?** Check `python3 --version` (without Python the skin silently does nothing), then
+  `/wf status`. `claude --debug` shows each hook firing.
+
+> **Maintainer note:** installed copies update only when `version` in `.claude-plugin/plugin.json`
+> changes. Raise it (and the **Version** line at the top of this README) with every release.
+
+### Quick start
+
+```
+/wf on                     ← once per project; the skin remembers it for this repo + branch
+"Let's build <feature>"    ← Superpowers' brainstorming starts; the skin follows it
+```
+
+What a feature looks like:
+
+| You | You see in the terminal |
+|---|---|
+| `/wf on` | `WF ▸ on · standard · no phase yet` |
+| "Let's add CSV export to reports" | `WF ▸ brainstorming started → Phase 0 (Tier + Prereqs)` |
+| *(Claude summarises the project and the request, ends with its checklist)* | `WF ▸ Gate P1 reached · checklist 8/8 (100%) · all items ✓` |
+| `approved` | `WF ▸ Gate P1 approved → Phase 2 (Explore)` |
+| *(questions … the spec)* | `WF ▸ Gate P3 reached · checklist 8/10 (80%) · missing: access-control matrix, expected scale` |
+| "the matrix: only report owners may export" | *(Claude adds it and ends at the gate again)* `· checklist 10/10` |
+| `approved` | `WF ▸ Gate P3 approved → Phase 4 (Plan)` … and so on to Phase 10 |
+| `/wf status` | `P0 ✓ · P1 ✓ · P2 ✓ · P3 ✓ · P4 70% (gate)` |
+
+You never type "read the workflow file" or "now do phase 4" — approving a gate is enough.
+
+### Which level when
+
+| Level | Use it for | Example |
+|---|---|---|
+| `lite` | Docs, typos, config tweaks — rules without phases | `/wf lite` |
+| `standard` | Normal features (the default) | `/wf on` |
+| `strict` | Auth, payments, database schema, personal data, public APIs | `/wf on strict` |
+
+### Already have a status line?
+
+`/wf statusline` never replaces it. It **wraps** it: your command stays in `~/.claude/settings.json`
+word for word (so ponytail, caveman and similar plugins still recognise and update their own script
+there), runs first with the same input, and `[WF …]` is added after it — `🐴 ponytail [WF P3 · standard]`.
+Extra settings such as `padding` are kept. If your status line is slow (> 3 s) or fails, the WF badge
+still shows. `/wf statusline off` puts back exactly what you had. If a project sets its own status line
+in `.claude/settings.json`, that one wins inside the project — `/wf statusline` tells you.
+
+### Good habits
+
+- **Once per machine:** `/wf default standard` and `/wf statusline` (so the phase is always under your
+  prompt — no manual editing; `/wf statusline off` undoes it).
+- **One feature, one `/wf new`** (brainstorming does it for you). On a feature branch it becomes its own feature.
+- **Read the "missing:" list before you approve.** The % shows what was *addressed*, not whether it's good.
+- **`/wf pause` for detours** (a spike, a side question, an unrelated fix), then `/wf resume` — not
+  `off`, which forgets the phase.
+- **Go back on purpose only:** when Phase 5 sends the plan back, type `/wf 4`. Claude recommends it; you decide.
+- **Stuck?** `/wf help`, or `/wf help <command>` (e.g. `/wf help strict`, `/wf help gate`).
+
+### All commands
 
 | Command | What it does |
 |---|---|
+| `/wf help` · `/wf help <command>` | The everyday commands · one command explained with an example (shown in your terminal only) |
 | `/wf on` · `/wf on strict` | Switch the skin on for this project + branch (default level, or the one you name) |
 | `/wf pause` · `/wf resume` | Go silent but remember the phase · continue where you paused |
 | `/wf off` | Fully off, phase forgotten |
@@ -122,7 +188,7 @@ off until you turn it on, a level you choose, a status line that shows where you
 | `/wf default strict` | Default level for new projects on this machine |
 | `/wf status` · `/wf 5` · `/wf new` | Where am I · jump to a phase (loop-backs) · start a new feature |
 | `/wf dirs <spec> <plan>` | Your own spec/plan folders, if they aren't `docs/superpowers/specs|plans` or `docs/specs|plans` (inside a worktree the main checkout is searched too) |
-| `/wf statusline` | Prints the one line to add to `~/.claude/settings.json` to see `[WF P4 · standard]` |
+| `/wf statusline` · `/wf statusline off` | Show `[WF P4 · standard]` under your prompt — the plugin edits `~/.claude/settings.json` for you (backup first, other settings kept; an existing status line — ponytail's, caveman's or your own — is kept word for word and shown first) · remove it again and restore yours exactly |
 
 **Levels**
 

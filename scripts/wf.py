@@ -30,6 +30,8 @@ PHASE_NAMES = {0: "Tier + Prereqs", 1: "Context", 2: "Explore", 3: "Spec", 4: "P
                5: "Adversarial Review", 6: "TDD Plan", 7: "TDD Build", 8: "Post-Impl Review",
                9: "Living Docs", 10: "Deploy"}
 
+HELP_SHOWN = ("The /wf help text was shown to the user directly in their terminal. Reply with one short "
+              "line only, e.g. 'Help is shown above.' Do nothing else.")
 HELP = ("/wf commands: `/wf on [lite|standard|strict]`, `/wf off`, `/wf pause`, `/wf resume`, "
         "`/wf lite|standard|strict`, `/wf default <level>`, `/wf status`, `/wf <0-10>` (jump to a phase), "
         "`/wf new` (new feature, back to the tier check), `/wf dirs <spec> <plan>`, `/wf statusline`.")
@@ -232,11 +234,11 @@ class Store:
             yield
 
 
-def _atomic_write(path, obj):
+def _atomic_write(path, obj, indent=1):
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp-")
     try:
         with os.fdopen(fd, "w") as f:
-            json.dump(obj, f, indent=1) if not isinstance(obj, bytes) else f.buffer.write(obj)
+            json.dump(obj, f, indent=indent) if not isinstance(obj, bytes) else f.buffer.write(obj)
         os.replace(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError):
@@ -322,13 +324,225 @@ def phase_context(n, env, cwd, budget=LIMIT):
             "now with the Read tool (just that range), before continuing." + rule)
 
 
-def statusline_snippet(env):
-    script = data_dir(env) / "statusline.py"
-    cmd = "python3 %s statusline" % shlex.quote(str(script))   # quoted: paths may contain spaces
-    return ('Add this to ~/.claude/settings.json (it shows `[WF P4 · standard]` while the skin is on):\n'
-            '```json\n"statusLine": {"type": "command", "command": %s}\n```\n'
-            'If you already have a status line (e.g. ponytail), keep it and append the wf output: '
-            '`<your command>; %s`.' % (json.dumps(cmd, ensure_ascii=False), cmd))
+def claude_dir(env):
+    return Path(env.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude"))
+
+
+def _statusline_command(env, previous=None):
+    """Our status-line command. An existing one is wrapped, not hidden: its command text stays in
+    settings.json word for word, so the plugin that owns it (ponytail, caveman, …) still finds its
+    script there, and 'off' can restore it exactly."""
+    script = shlex.quote(str(data_dir(env) / "statusline.py"))   # quoted: paths may contain spaces
+    if previous:
+        return f"python3 {script} statusline-chain {shlex.quote(previous)}"
+    return f"python3 {script} statusline"
+
+
+def _wrapped_command(command):
+    """The original command wrapped inside our chain command, or None."""
+    try:
+        words = shlex.split(command or "")
+    except ValueError:
+        return None
+    if "statusline-chain" in words and words.index("statusline-chain") + 1 < len(words):
+        return words[words.index("statusline-chain") + 1]
+    return None
+
+
+def _project_statusline(cwd):
+    """A status line set by this project's own settings (it wins over the user one), or None."""
+    root = Path(repo_root(cwd) or cwd) if cwd else None
+    for name in ("settings.local.json", "settings.json"):
+        try:
+            if root and json.loads((root / ".claude" / name).read_text()).get("statusLine"):
+                return root / ".claude" / name
+        except Exception:
+            pass
+    return None
+
+
+def _is_ours(statusline_setting):
+    return "statusline.py statusline" in str((statusline_setting or {}).get("command", ""))
+
+
+def _plugin_config(env):
+    try:
+        return json.loads((data_dir(env) / "config.json").read_text())
+    except Exception:
+        return {}
+
+
+def _save_plugin_config(env, cfg):
+    p = data_dir(env) / "config.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write(p, cfg)
+
+
+def _read_settings(path):
+    """(settings dict, error) — never guesses at a file it can't parse."""
+    if not path.exists():
+        return {}, None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None, f"{path} isn't plain JSON (comments or a typo?) — not changed"
+    if not isinstance(data, dict):
+        return None, f"{path} isn't a JSON object — not changed"
+    return data, None
+
+
+def _backup(path):
+    if not path.exists():
+        return None
+    b = path.with_name(path.name + time.strftime(".wf-backup-%Y%m%d-%H%M%S"))
+    b.write_bytes(path.read_bytes())
+    return b
+
+
+def statusline_install(env, cwd=None):
+    """Add the wf status line to Claude Code's user settings. Keeps every other setting, backs the
+    file up first, and keeps an existing status line (e.g. ponytail) by showing both."""
+    install_statusline(env)
+    path = claude_dir(env) / "settings.json"
+    data, err = _read_settings(path)
+    if err:
+        return f"status line {err}. Nothing else was touched."
+    current = data.get("statusLine")
+    if _is_ours(current):
+        return "status line already installed — nothing changed. Remove it with /wf statusline off."
+    backup = _backup(path)
+    cfg = _plugin_config(env)
+    if current and current.get("command"):
+        cfg["previous_statusline"] = current
+        data["statusLine"] = dict(current, type="command",
+                                  command=_statusline_command(env, current["command"]))   # keeps padding etc.
+        what = "installed next to your existing status line (kept, shown first)"
+    else:
+        cfg.pop("previous_statusline", None)
+        data["statusLine"] = {"type": "command", "command": _statusline_command(env)}
+        what = "installed"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write(path, data, indent=2)
+    _save_plugin_config(env, cfg)
+    override = _project_statusline(cwd)
+    note = (f" Note: this project sets its own status line in {override}, which wins over yours here — "
+            "the WF badge won't show in this project unless you remove it there." if override else "")
+    return (f"status line {what} in {path}" + (f" (backup: {backup.name})" if backup else "") +
+            ". You'll see [WF P3 · standard] under the prompt while the skin is on (new session if it "
+            "doesn't appear). Undo: /wf statusline off." + note)
+
+
+def statusline_remove(env):
+    path = claude_dir(env) / "settings.json"
+    data, err = _read_settings(path)
+    if err:
+        return f"status line {err}."
+    if not _is_ours(data.get("statusLine")):
+        return "status line not installed — nothing changed."
+    backup = _backup(path)
+    cfg = _plugin_config(env)
+    saved = cfg.pop("previous_statusline", None)
+    current = data["statusLine"]
+    wrapped = _wrapped_command(current.get("command"))
+    if wrapped is not None:
+        # the command in settings.json is the truth (another plugin may have fixed its path inside it)
+        previous = dict(current, command=wrapped)
+        if saved and saved.get("command") == wrapped:
+            previous = saved
+    else:
+        previous = None
+    if previous:
+        data["statusLine"] = previous
+    else:
+        data.pop("statusLine", None)
+    _atomic_write(path, data, indent=2)
+    _save_plugin_config(env, cfg)
+    return ("status line removed" + (", your previous one is back" if previous else "") +
+            (f" (backup: {backup.name})" if backup else "") + ".")
+
+
+def statusline_chain(raw_stdin, env, previous=None):
+    """Status line = the user's previous status line (same input), then ours."""
+    if previous is None:
+        previous = (_plugin_config(env).get("previous_statusline") or {}).get("command")
+    before = ""
+    if previous:
+        try:
+            before = subprocess.run(previous, shell=True, input=raw_stdin, capture_output=True, text=True,
+                                    timeout=3).stdout.rstrip("\n")
+        except Exception:
+            before = ""
+    try:
+        ours = statusline(json.loads(raw_stdin or "{}"), env)
+    except Exception:
+        ours = ""
+    return " ".join(x for x in (before, ours) if x)
+
+
+# ---------------------------------------------------------------- /wf help (shown to the user only)
+
+HELP_GUIDE = """help — everyday use
+  /wf on              switch on for this project (default level: standard)
+  /wf pause · resume  go quiet for a side task · continue where you were
+  /wf status          where am I: P0 ✓ · P1 ✓ · P2 ⚠ skipped · P3 70%
+  /wf off             fully off for this project
+  At a gate: reply "approved" (or "start Phase 7") → next phase
+  Rarely:  /wf strict · /wf 4 (go back) · /wf new · /wf dirs · /wf default · /wf statusline
+  More: /wf help <command>, e.g. /wf help strict · full guide: README → 'Quick start'"""
+
+HELP_TOPICS = {
+    "on": "/wf on [level] — switch the skin on for this project and branch.\n"
+          "  Claude gets the workflow spine once; phases then move on your approvals.\n"
+          "  Example: /wf on   ·   /wf on strict (for auth, payments, schema work)",
+    "off": "/wf off — fully off for this project; the current phase is forgotten.\n"
+           "  Use pause instead if you want to come back to the same phase.\n"
+           "  Example: /wf off",
+    "pause": "/wf pause — go quiet (no rules, no gates, no guard) but remember the phase.\n"
+             "  Good for a spike, a side question or an unrelated quick fix.\n"
+             "  Example: /wf pause … do the side task … /wf resume",
+    "resume": "/wf resume — switch back on at the phase you paused in.\n"
+              "  Example: /wf resume",
+    "status": "/wf status — level, current phase and the timeline of this feature.\n"
+              "  ✓ approved · ⚠ skipped (left without an approved gate) · % = gate checklist.\n"
+              "  Example: /wf status  →  P0 ✓ · P1 ✓ · P2 ⚠ skipped · P3 70% (gate)",
+    "levels": "Levels — how strict the skin is (switch any time):\n"
+              "  lite: every-phase rules only, no phases (docs, typos, config tweaks)\n"
+              "  standard: phases + gates + checklist % (normal features — the default)\n"
+              "  strict: + extra turn to fill missing items, merges blocked until Phase 10\n"
+              "          (auth, payments, database schema, personal data, public APIs)\n"
+              "  Example: /wf strict   ·   /wf default standard",
+    "gate": "Gates — Claude ends a phase with its checklist lines and [[gate P3]].\n"
+            "  You see: WF ▸ Gate P3 reached · checklist 8/10 (80%) · missing: …\n"
+            "  Read the missing list, then reply approved / looks good / proceed → next phase.\n"
+            "  Anything with but, change or a question mark is not an approval.\n"
+            "  Example: approved   ·   start Phase 7 (after the Phase 6 gate)",
+    "new": "/wf new — start a new feature: back to the tier check, timeline cleared.\n"
+           "  Brainstorming does this for you; on a branch it makes that branch its own feature.\n"
+           "  Example: /wf new",
+    "phase": "/wf <0-10> — jump to a phase. Mainly to go back on purpose (a loop-back),\n"
+             "  e.g. when Phase 5 sends the plan back to Phase 4. Skipped phases show ⚠.\n"
+             "  Example: /wf 4",
+    "dirs": "/wf dirs <spec> <plan> — your own spec/plan folders (relative to the repo root),\n"
+            "  if they aren't docs/superpowers/specs|plans or docs/specs|plans.\n"
+            "  Example: /wf dirs design/specs design/plans   ·   /wf dirs (show current)",
+    "default": "/wf default <level> — the level /wf on uses on this machine.\n"
+               "  Example: /wf default standard",
+    "statusline": "/wf statusline — once per machine: shows [WF P3 70% · ✓✓⚠ · standard] under the prompt.\n"
+                  "  It edits ~/.claude/settings.json for you (backup first, other settings kept);\n"
+                  "  an existing status line (ponytail, caveman, your own) is kept word for word and\n"
+                  "  shown first.\n"
+                  "  Example: /wf statusline   ·   /wf statusline off (removes it, restores yours)",
+}
+HELP_TOPICS.update({lvl: HELP_TOPICS["levels"] for lvl in LEVELS})
+HELP_TOPICS.update({"approve": HELP_TOPICS["gate"], "approved": HELP_TOPICS["gate"]})
+
+
+def help_text(topic=None):
+    if not topic:
+        return HELP_GUIDE
+    if topic.isdecimal():
+        topic = "phase"
+    return HELP_TOPICS.get(topic) or f"no help for '{topic}'. Try /wf help (everyday use)."
 
 
 # ---------------------------------------------------------------- /wf commands
@@ -389,6 +603,8 @@ def run_command(cmd, args, state, store, env, cwd):
     if cmd == "status":
         tl = timeline_text(state) if state["phase"] is not None else ""
         return None, f"{tell}workflow skin {describe(state)}." + (f" Timeline: {tl}." if tl else "")
+    if cmd == "help":
+        return None, HELP_SHOWN
     if cmd == "dirs":
         if len(args) == 2:
             state["dirs"] = {"spec": args[0], "plan": args[1]}
@@ -396,7 +612,8 @@ def run_command(cmd, args, state, store, env, cwd):
         cur = state.get("dirs") or {k: " or ".join(v) for k, v in DEFAULT_DIRS.items()}
         return None, f"{tell}spec folder {cur['spec']}, plan folder {cur['plan']}. Change: `/wf dirs <spec> <plan>`."
     if cmd == "statusline":
-        return None, "Show the user this, verbatim:\n\n" + statusline_snippet(env)
+        msg = statusline_remove(env) if args[:1] == ["off"] else statusline_install(env, cwd)
+        return None, tell + msg
     if cmd == "phase":
         n = int(args[0])
         if not 0 <= n <= 10:
@@ -415,7 +632,7 @@ def run_command(cmd, args, state, store, env, cwd):
         state.update(phase=0, injected=0)
         lead = f"{tell}new feature — starting at the tier check.\n\n"
         return state, lead + skin_context(state, env, cwd, budget=LIMIT - len(lead))
-    return None, "Show the user: unknown /wf command. " + HELP
+    return None, "Show the user in one line: unknown /wf command. " + HELP
 
 
 # ---------------------------------------------------------------- per-phase checklists
@@ -1027,7 +1244,16 @@ def on_prompt(payload, env, store, cwd):
         if new is not None:
             store.save(cwd, new)
         install_statusline(env)
-        return output("UserPromptSubmit", text, show_status(new or store.load(cwd)))
+        cmd, args = parsed
+        if cmd == "help":
+            show = help_text(args[0] if args else None)
+        elif cmd == "statusline":
+            show = text.split(": ", 1)[1]
+        elif text.startswith("Show the user in one line: unknown"):
+            show = f"unknown command '/wf {cmd}'. Type /wf help for the everyday commands."
+        else:
+            show = show_status(new or store.load(cwd))
+        return output("UserPromptSubmit", text, show)
     start = START_RE.match((payload.get("prompt") or "").strip())
     if engine_on(state) and start:
         n, gate = int(start.group(1)), state.get("gate_pending")
@@ -1074,6 +1300,9 @@ HANDLERS = {
 }
 
 
+READ_ONLY_COMMANDS = ("help", "status", "statusline")
+
+
 def handle(event, payload, env):
     cwd = payload.get("cwd") or env.get("CLAUDE_PROJECT_DIR") or os.getcwd()
     fn = HANDLERS.get(event)
@@ -1098,7 +1327,10 @@ def handle(event, payload, env):
 def _handle(event, payload, env, store, cwd, fn):
     # Fast path: the skin was never used here, or is off, and this isn't a /wf command — nothing to do.
     # No lock, no files, no further git calls (this runs before every Bash tool call in every project).
-    if not (event == "UserPromptSubmit" and parse_command(payload.get("prompt", ""))):
+    parsed = parse_command(payload.get("prompt", "")) if event == "UserPromptSubmit" else None
+    if parsed and parsed[0] in READ_ONLY_COMMANDS:
+        return fn(payload, env, store, cwd)          # nothing to change: no lock, no files
+    if not parsed:
         saved = store.peek(cwd) if store.dir.is_dir() else None  # never used on this machine: no git at all
         if not saved or saved.get("enabled", "off") == "off":
             if event == "SessionStart":
@@ -1128,12 +1360,17 @@ def main(argv):
     event = argv[1] if len(argv) > 1 else ""
     env = dict(os.environ)
     try:
-        payload = json.loads(sys.stdin.read() or "{}")
-        if event == "statusline":
+        raw = sys.stdin.read()
+        if event in ("statusline", "statusline-chain"):
             # The status line runs outside the plugin: our state dir is this script's own dir.
             env.setdefault("CLAUDE_PLUGIN_DATA", str(Path(__file__).resolve().parent))
-            print(statusline(payload, env), end="")
+            if event == "statusline-chain":
+                line = statusline_chain(raw, env, argv[2] if len(argv) > 2 else None)
+            else:
+                line = statusline(json.loads(raw or "{}"), env)
+            print(line, end="")
             return
+        payload = json.loads(raw or "{}")
         out = handle(event, payload, env)
         if out:
             print(json.dumps(out))
