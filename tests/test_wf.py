@@ -233,9 +233,9 @@ class TestStatusline(unittest.TestCase):
             self.assertEqual(wf.statusline({"cwd": str(e.repo)}, e.env), "")
             e.prompt("/wf on")
             e.prompt("/wf 4")
-            self.assertEqual(wf.statusline({"cwd": str(e.repo)}, e.env), "[WF P4 · standard]")
+            self.assertEqual(wf.statusline({"cwd": str(e.repo)}, e.env), "[WF P4 Plan · standard]")
             e.prompt("/wf pause")
-            self.assertEqual(wf.statusline({"cwd": str(e.repo)}, e.env), "[WF ⏸ P4]")
+            self.assertEqual(wf.statusline({"cwd": str(e.repo)}, e.env), "[WF paused · P4 Plan]")
         finally:
             e.close()
 
@@ -251,7 +251,7 @@ class TestStatuslineInstall(unittest.TestCase):
             p = subprocess.run([sys.executable, str(script), "statusline"],
                                input=json.dumps({"workspace": {"current_dir": str(e.repo)}}),
                                capture_output=True, text=True, env={"PATH": os.environ["PATH"]})
-            self.assertEqual(p.stdout, "[WF P– · standard]")
+            self.assertEqual(p.stdout, "[WF no phase yet · standard]")
         finally:
             e.close()
 
@@ -845,7 +845,7 @@ class TestTimeline(EngineCase):
         self.e.prompt("/wf new")
         self.walk(0)
         self.walk(1)
-        self.assertEqual(wf.statusline({"cwd": str(self.e.repo)}, self.e.env), "[WF P2 · ✓✓ · standard]")
+        self.assertEqual(wf.statusline({"cwd": str(self.e.repo)}, self.e.env), "[WF P2 Explore · 2 approved · standard]")
 
 
 # ================================================================ F3: checklist %
@@ -1014,7 +1014,7 @@ class TestChecklist(EngineCase):
         self.stop(checklist(3, skip=("reuse", "assumptions")))
         pct = wf.score_pct(self.e.state()["timeline"]["3"])
         self.assertEqual(pct, 80)
-        self.assertRegex(wf.statusline({"cwd": str(self.e.repo)}, self.e.env), r"\[WF P3 80%")
+        self.assertRegex(wf.statusline({"cwd": str(self.e.repo)}, self.e.env), r"\[WF P3 Spec · gate 80%")
         self.e.prompt("/wf ok")
         self.assertIn("P3 ✓ 80%", shown(self.e.prompt("/wf status")))
 
@@ -1162,7 +1162,7 @@ class TestStatuslineSnippetQuoting(unittest.TestCase):
             cmd = json.loads((Path(e.env["CLAUDE_CONFIG_DIR"]) / "settings.json").read_text())["statusLine"]["command"]
             p = subprocess.run(cmd, shell=True, input=json.dumps({"workspace": {"current_dir": str(e.repo)}}),
                                capture_output=True, text=True)
-            self.assertEqual((p.returncode, p.stdout), (0, "[WF P– · standard]"), p.stderr)
+            self.assertEqual((p.returncode, p.stdout), (0, "[WF no phase yet · standard]"), p.stderr)
         finally:
             e.close()
 
@@ -1540,7 +1540,7 @@ class TestStatuslineInstall2(StatuslineCase):
         self.assertIn("installed", shown(out))
         self.assertNotIn("no phase yet", shown(out))
         self.e.prompt("/wf on")
-        self.assertEqual(self.run_statusline(), "[WF P– · standard]")
+        self.assertEqual(self.run_statusline(), "[WF no phase yet · standard]")
 
     def test_keeps_other_settings_and_backs_up(self):
         self.settings.write_text(json.dumps({"model": "opus", "permissions": {"allow": ["Bash(ls)"]}}, indent=2))
@@ -1556,14 +1556,14 @@ class TestStatuslineInstall2(StatuslineCase):
         out = self.e.prompt("/wf statusline")
         self.assertIn("kept", shown(out).lower())
         self.e.prompt("/wf on")
-        self.assertEqual(self.run_statusline(), "PONY [WF P– · standard]")
+        self.assertEqual(self.run_statusline(), "PONY [WF no phase yet · standard]")
 
     def test_running_twice_does_not_chain_itself(self):
         self.settings.write_text(json.dumps({"statusLine": {"type": "command", "command": "printf PONY"}}))
         self.e.prompt("/wf statusline")
         self.e.prompt("/wf statusline")
         self.e.prompt("/wf on")
-        self.assertEqual(self.run_statusline(), "PONY [WF P– · standard]")
+        self.assertEqual(self.run_statusline(), "PONY [WF no phase yet · standard]")
         self.assertEqual(len(list(self.claude.glob("settings.json.wf-backup-*"))), 1)
 
     def test_invalid_settings_are_never_touched(self):
@@ -1631,19 +1631,19 @@ class TestStatuslineCoexistence(StatuslineCase):
         self.install_over({"type": "command",
                            "command": """printf '%s' "it's" >/dev/null; v=PO; printf "${v}NY" """})
         self.e.prompt("/wf on")
-        self.assertEqual(self.run_statusline(), "PONY [WF P– · standard]")
+        self.assertEqual(self.run_statusline(), "PONY [WF no phase yet · standard]")
 
     def test_slow_previous_status_line_does_not_hide_ours(self):
         self.install_over({"type": "command", "command": "sleep 10; printf LATE"})
         self.e.prompt("/wf on")
         t = time.time()
-        self.assertEqual(self.run_statusline(), "[WF P– · standard]")
+        self.assertEqual(self.run_statusline(), "[WF no phase yet · standard]")
         self.assertLess(time.time() - t, 6)
 
     def test_failing_previous_status_line_does_not_hide_ours(self):
         self.install_over({"type": "command", "command": "exit 3"})
         self.e.prompt("/wf on")
-        self.assertEqual(self.run_statusline(), "[WF P– · standard]")
+        self.assertEqual(self.run_statusline(), "[WF no phase yet · standard]")
 
     def test_project_status_line_override_is_reported(self):
         (self.e.repo / ".claude").mkdir()
@@ -1944,4 +1944,48 @@ class TestReviewFindings211(EngineCase):
         self.assertNotIn(warn, shown(self.stop("plan again\n[[gate P4]]")))   # same change: said once
         f.write_text(QUOTE_SPEC + "\nedit two")
         self.assertIn(warn, shown(self.stop("plan\n[[gate P4]]")))          # a new change: said again
+
+
+class TestStatusline212(unittest.TestCase):
+    """The wrapped status line is passed through untouched; the WF badge is plain words."""
+
+    def setUp(self):
+        self.e = Env()
+
+    def tearDown(self):
+        self.e.close()
+
+    def chain(self, previous, extra_env=None):
+        script = ROOT / "scripts" / "wf.py"
+        env = dict(os.environ, **self.e.env, **(extra_env or {}))
+        p = subprocess.run([sys.executable, str(script), "statusline-chain", previous],
+                           input=json.dumps({"cwd": str(self.e.repo)}).encode(), capture_output=True, env=env)
+        return p.stdout.decode("utf-8")
+
+    def test_previous_status_line_keeps_its_colours(self):
+        self.e.prompt("/wf on")
+        out = self.chain("printf '\\033[38;5;108m[PONY]\\033[0m'")
+        self.assertTrue(out.startswith("\x1b[38;5;108m[PONY]\x1b[0m [WF "), repr(out))
+
+    def test_our_part_is_still_cleaned_and_ascii_when_needed(self):
+        self.e.prompt("/wf on")
+        st = wf.Store(self.e.env)
+        s = st.load(str(self.e.repo))
+        s["level"] = "standard\x1b]0;pwned\x07"                    # a tampered state file
+        st.save(str(self.e.repo), s)
+        out = self.chain("printf 'PONY'", {"WF_ASCII": "1"})
+        self.assertEqual(out, "PONY [WF no phase yet | standard]")
+
+    def test_badge_reads_as_words(self):
+        e = self.e
+        e.prompt("/wf on")
+        e.prompt("/wf new")
+        for n in (0, 1):
+            e.run("Stop", last_assistant_message=f"x\n[[gate P{n}]]")
+            e.prompt("/wf ok")
+        e.prompt("/wf 5")                                            # the user jumps: P2–P4 skipped
+        e.run("Stop", last_assistant_message=checklist(5))
+        line = wf.statusline({"cwd": str(e.repo)}, e.env)
+        self.assertRegex(line, r"^\[WF P5 Adversarial Review · gate \d+% · 2 approved · 3 skipped · standard\]$")
+        self.assertFalse(set(line) & set("✓⚠⏸"))
 

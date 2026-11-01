@@ -509,7 +509,7 @@ def statusline_install(env, cwd=None):
     note = (f" Note: this project sets its own status line in {override}, which wins over yours here — "
             "the WF badge won't show in this project unless you remove it there." if override else "")
     return (f"status line {what} in {path}" + (f" (backup: {backup.name})" if backup else "") +
-            ". You'll see [WF P3 · standard] under the prompt while the skin is on (new session if it "
+            ". You'll see [WF P3 Spec · standard] under the prompt while the skin is on (new session if it "
             "doesn't appear). Undo: /wf statusline off." + note)
 
 
@@ -554,9 +554,11 @@ def statusline_chain(raw_stdin, env, previous=None):
         except Exception:
             before = ""
     try:
-        ours = statusline(json.loads(raw_stdin or "{}"), env)
+        ours = for_terminal(statusline(json.loads(raw_stdin or "{}"), env), env).replace("\n", " ")
     except Exception:
         ours = ""
+    # The previous status line is the user's own command: its output (colours included) is passed
+    # through exactly as it printed it. Only our part is cleaned.
     return " ".join(x for x in (before, ours) if x)
 
 
@@ -608,7 +610,8 @@ HELP_TOPICS = {
             "  Example: /wf dirs design/specs design/plans   ·   /wf dirs (show current)",
     "default": "/wf default <level> — the level /wf on uses on this machine.\n"
                "  Example: /wf default standard",
-    "statusline": "/wf statusline — once per machine: shows [WF P3 70% · ✓✓⚠ · standard] under the prompt.\n"
+    "statusline": "/wf statusline — once per machine: shows [WF P3 Spec · gate 70% · 3 approved · standard]\n"
+                  "  under the prompt (current phase, its gate score, earlier phases approved/skipped).\n"
                   "  It edits ~/.claude/settings.json for you (backup first, other settings kept);\n"
                   "  an existing status line (ponytail, caveman, your own) is kept word for word and\n"
                   "  shown first.\n"
@@ -1675,21 +1678,27 @@ def _handle(event, payload, env, store, cwd, fn):
 
 
 def statusline(payload, env):
+    """The WF badge, in words: [WF P6 TDD Plan · gate 80% · 4 approved · 1 skipped · standard]."""
     cwd = (payload.get("workspace") or {}).get("current_dir") or payload.get("cwd") or os.getcwd()
     repo_identity.cache_clear()
     state = Store(env).load(cwd)
     if state["enabled"] == "off":
         return ""
-    ph = state["phase"] if isinstance(state["phase"], int) and 0 <= state["phase"] <= 10 else "–"
-    if state["level"] not in LEVELS:
-        state["level"] = DEFAULT_LEVEL
+    ph = state["phase"] if isinstance(state["phase"], int) and 0 <= state["phase"] <= 10 else None
+    level = state["level"] if state["level"] in LEVELS else DEFAULT_LEVEL
+    where = "no phase yet" if ph is None else f"P{ph} {PHASE_NAMES[ph]}"
     if state["enabled"] == "paused":
-        return f"[WF ⏸ P{ph}]"
-    entry = (state.get("timeline") or {}).get(str(state["phase"]), {})
-    pct = score_pct(entry) if state.get("gate_pending") == state["phase"] else None
-    head = f"P{ph}" + (f" {pct}%" if pct is not None else "")
-    marks = timeline_marks(state)
-    return "[WF " + " · ".join(x for x in (head, marks, state["level"]) if x) + "]"
+        return f"[WF paused · {where}]"
+    parts = [where]
+    if ph is not None and state.get("gate_pending") == ph:
+        pct = score_pct((state.get("timeline") or {}).get(str(ph), {}))
+        parts.append(f"gate {pct}%" if pct is not None else "gate waiting")
+    if ph is not None:
+        tl = state.get("timeline") or {}
+        done = sum(1 for k in range(ph) if tl.get(str(k), {}).get("status") == "done")
+        skipped = sum(1 for k in range(ph) if tl.get(str(k), {}).get("status") == "skipped")
+        parts += [f"{done} approved"] * bool(done) + [f"{skipped} skipped"] * bool(skipped)
+    return "[WF " + " · ".join(parts + [level]) + "]"
 
 
 def log_error(env, event):
@@ -1721,10 +1730,9 @@ def main(argv):
             # The status line runs outside the plugin: our state dir is this script's own dir.
             env.setdefault("CLAUDE_PLUGIN_DATA", str(Path(__file__).resolve().parent))
             if event == "statusline-chain":
-                line = statusline_chain(raw, env, argv[2] if len(argv) > 2 else None)
+                _write(statusline_chain(raw, env, argv[2] if len(argv) > 2 else None))
             else:
-                line = statusline(json.loads(raw or "{}"), env)
-            _write(for_terminal(line, env).replace("\n", " "))
+                _write(for_terminal(statusline(json.loads(raw or "{}"), env), env).replace("\n", " "))
             return
         try:
             payload = json.loads(raw or "{}")
