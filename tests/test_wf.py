@@ -327,11 +327,29 @@ class TestPhaseEngine(EngineCase):
         self.assertEqual(self.e.state()["phase"], 3)
         self.assertIn("feedback", shown(out))
 
-    def test_marker_moves_phase_to_marker_phase(self):
-        self.e.prompt("/wf 0")
-        self.stop("Context summary...\n[[gate P1]]")
+    def test_marker_never_moves_the_phase(self):
+        self.e.prompt("/wf 3")
+        for n in (4, 5, 7, 10):
+            out = self.stop(f"x\n[[gate P{n}]]")
+            s = self.e.state()
+            self.assertEqual((s["phase"], s["gate_pending"]), (3, None), n)
+            self.assertIn(f"Gate P{n} marker at Phase 3 not applied", shown(out))
         self.e.prompt("/wf ok")
-        self.assertEqual(self.e.state()["phase"], 2)
+        self.assertEqual(self.e.state()["phase"], 3)
+
+    def test_refused_marker_is_explained_to_claude_on_the_next_prompt(self):
+        self.e.prompt("/wf 3")
+        self.stop("x\n[[gate P7]]")
+        out = self.e.prompt("go on")
+        self.assertIn("did not apply it", ctx(out))
+        self.assertNotIn("did not apply it", ctx(self.e.prompt("and now?")))   # told once
+
+    def test_marker_without_a_phase_is_refused(self):
+        self.e.prompt("/wf new")
+        self.e.prompt("/wf off")
+        self.e.prompt("/wf on")
+        self.stop("x\n[[gate P3]]")
+        self.assertIsNone(self.e.state()["phase"])
 
     def test_final_gate_completes_feature(self):
         self.e.prompt("/wf 10")
@@ -382,12 +400,21 @@ class TestSkillMapping(EngineCase):
         self.assertIn("not approved", ctx(out))
         self.assertEqual(self.e.state()["phase"], 2)
 
-    def test_writing_plans_after_spec_enters_phase_4(self):
+    def test_writing_plans_after_spec_approval(self):
         self.e.prompt("/wf 3")
+        self.stop("spec\n[[gate P3]]")
+        self.e.prompt("/wf ok")
         out = self.skill("superpowers:writing-plans")
         self.assertEqual(self.e.state()["phase"], 4)
-        self.assertIn("## Phase 4", ctx(out))
         self.assertIn("execution method", ctx(out))
+
+    def test_writing_plans_never_skips_the_spec_gate(self):
+        self.e.prompt("/wf 3")
+        self.stop("spec\n[[gate P3]]")
+        out = self.skill("superpowers:writing-plans")
+        self.assertEqual(self.e.state()["phase"], 3)
+        self.assertIn("not approved", ctx(out))
+        self.assertIn("/wf ok first", shown(out))
 
     def test_executor_before_phase_6_warns(self):
         self.e.prompt("/wf 4")
@@ -396,11 +423,19 @@ class TestSkillMapping(EngineCase):
             self.assertIn("Phase 5", ctx(out))
             self.assertEqual(self.e.state()["phase"], 4)
 
-    def test_executor_after_phase_6_enters_7(self):
+    def test_executor_after_phase_6_approval(self):
         self.e.prompt("/wf 6")
+        self.stop("tdd plan\n[[gate P6]]")
+        self.e.prompt("/wf ok")
         out = self.skill("superpowers:subagent-driven-development")
         self.assertEqual(self.e.state()["phase"], 7)
         self.assertIn("Execution record", ctx(out))
+
+    def test_executor_never_skips_the_phase_6_gate(self):
+        self.e.prompt("/wf 6")
+        out = self.skill("superpowers:executing-plans")
+        self.assertEqual(self.e.state()["phase"], 6)
+        self.assertIn("not approved", ctx(out))
 
     def test_finishing_before_phase_10_holds(self):
         self.e.prompt("/wf 7")
@@ -679,11 +714,11 @@ class TestTimeline(EngineCase):
         self.assertEqual(self.marks(), "✓✓")
         self.assertEqual(self.e.state()["phase"], 2)
 
-    def test_jumping_ahead_marks_skipped(self):
+    def test_jumping_ahead_is_refused(self):
         self.e.prompt("/wf new")
         self.walk(0)
-        self.stop("design doc\n[[gate P3]]")      # Claude jumped from Phase 1 to the P3 gate
-        self.assertEqual(self.marks(), "✓⚠⚠")
+        self.stop("design doc\n[[gate P3]]")      # Claude tried to jump from Phase 1 to the P3 gate
+        self.assertEqual((self.e.state()["phase"], self.marks()), (1, "✓"))
 
     def test_skill_jump_marks_skipped(self):
         self.e.prompt("/wf 6")                     # from nothing: no history to mark
@@ -708,7 +743,7 @@ class TestTimeline(EngineCase):
     def test_status_shows_timeline(self):
         self.e.prompt("/wf new")
         self.walk(0)
-        self.stop("x\n[[gate P2]]")
+        self.e.prompt("/wf 2")                     # the user jumps on purpose: P1 is marked skipped
         out = self.e.prompt("/wf status")
         self.assertRegex(shown(out), r"P0 ✓( \d+%)? · P1 ⚠ skipped · P2")
 
@@ -1307,11 +1342,11 @@ class TestCombinedFirstMessage(EngineCase):
         self.e.prompt("/wf ok")
         self.assertEqual(wf.timeline_marks(self.e.state()), "✓✓")
 
-    def test_without_p0_lines_p0_is_skipped(self):
+    def test_without_p0_lines_the_p1_marker_is_refused(self):
         self.skill("superpowers:brainstorming")
-        self.stop(self.first_message(with_p0=False))
-        self.e.prompt("/wf ok")
-        self.assertEqual(wf.timeline_marks(self.e.state()), "⚠✓")
+        out = self.stop(self.first_message(with_p0=False))
+        self.assertEqual(self.e.state()["phase"], 0)
+        self.assertIn("Phase 0 checklist is incomplete", shown(out))
 
     def test_brainstorming_note_allows_one_combined_gate(self):
         out = self.skill("superpowers:brainstorming")
@@ -1327,7 +1362,7 @@ class TestSkillFile(unittest.TestCase):
 
 class TestExecutorReminderMatchesDocs(EngineCase):
     def test_lists_every_ledger_line_the_docs_require(self):
-        self.e.prompt("/wf 6")
+        self.e.prompt("/wf 7")
         text = ctx(self.skill("superpowers:executing-plans"))
         for item in ("Ruling", "parked", "minor (deferred)", "no reachable spec"):
             self.assertIn(item, text)

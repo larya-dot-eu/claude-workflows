@@ -206,15 +206,23 @@ the plugin never reads approval from what you write, in any language, so everyth
 gate is feedback (the terminal says so), and a turn that ends without the marker clears the pending
 gate — a side question can never be mistaken for approval. If a marker is ever missed, `/wf 4` puts you back on track. Going *back* (e.g. Phase 5
 sends the plan back to Phase 4) is always your call: Claude recommends it, you type `/wf 4`; a
-marker for an earlier phase is treated as a recap and never erases your timeline.
+marker for an earlier phase is treated as a recap and never erases your timeline. Claude can never move
+the phase *forward* on its own: a marker for a later phase (`[[gate P7]]` while in Phase 3) is refused —
+you see `⚠ Gate P7 marker at Phase 3 not applied`, and Claude is told on your next message — and a
+Superpowers skill that starts early (`writing-plans` before the spec gate is approved, an executor
+before the Phase 6 gate) gets a stop warning instead of a phase change. The one exception is
+brainstorming's first message, which closes Phase 0 and Phase 1 together, and only when its Phase 0
+checklist is complete.
 
-**What you see in the terminal** (shown to you only — none of it is sent to Claude, so it costs no context):
+**What you see in the terminal** (shown to you only — none of it is sent to Claude, so it costs no context;
+the one exception is a refused gate marker, which Claude is told about once, on your next message):
 
 ```
 WF ▸ brainstorming started → Phase 0 (Tier + Prereqs)
 WF ▸ Gate P1 approved via /wf ok → Phase 2 (Explore)
 WF ▸ Gate P3 reached · checklist 8/10 (80%) · missing: expected scale · quote not in file: reuse · 7 quoted in 2026-11-01-report.md · 1 claimed, not checked · content not judged — your review
-WF ▸ ⚠ writing-plans — spec (Phase 3) is not approved yet
+WF ▸ ⚠ writing-plans — spec (Phase 3) is not approved yet — /wf ok first
+WF ▸ ⚠ Gate P7 marker at Phase 3 not applied — phases move one at a time, only with your /wf ok (current: Phase 3)
 ```
 
 - **Checklist %** — every gate has a checklist taken from the full doc. Claude lists each item on its own
@@ -228,8 +236,8 @@ WF ▸ ⚠ writing-plans — spec (Phase 3) is not approved yet
   *claimed, not checked*. It measures **coverage, not quality** — the line ends with
   *content not judged — your review*, because reading the gate is still your job.
 - **Timeline** — `/wf status` shows `P0 ✓ · P1 ✓ · P2 ⚠ skipped · P3 70% (gate)`. A phase left without an
-  approved gate (Claude jumping ahead, a skill starting early) is marked *skipped*, so you can see whether
-  brainstorming really went through Phases 1, 2 and 3.
+  approved gate (you jumping ahead with `/wf <n>`) is marked *skipped*, so the timeline always shows which
+  gates were really approved.
 - **Status line** — `[WF P3 70% · ✓✓⚠ · standard]` (current phase, its checklist %, earlier phases).
 - **strict** — when a gate has missing items, Claude gets one extra turn to do them (or mark them N/A with a
   reason) and ends at the gate again. Once per gate; never while Claude is asking you a question.

@@ -1011,19 +1011,29 @@ def on_stop(payload, env, store, cwd):
             store.save(cwd, state)
         return output("Stop", None, f"Gate P{gate} marker at Phase {state['phase']} ignored (treated as a recap) "
                                     f"— to go back to Phase {gate}, type `/wf {gate}`")
-    if gate != state.get("gate_pending") or (gate is not None and state["phase"] != gate):
-        if gate is not None and state["phase"] != gate:
-            old = state["phase"]
-            move_to(state, gate)
-            if old is not None and old < gate:
-                # One message may close earlier phases too (brainstorming's first message is the Phase 1
-                # summary and can carry the Phase 0 items): a fully covered earlier checklist rides on
-                # this gate's approval instead of counting as skipped.
-                tl = state["timeline"]
-                for k in range(old, gate):
-                    r = score(k, payload.get("last_assistant_message"), None, items_for(k, env, cwd))
-                    if r["listed"] and r["found"] == r["total"]:
-                        tl[str(k)] = dict(r, status="combined")
+    if gate is not None and gate != state["phase"]:
+        # Claude's marker never moves the phase on its own. Single exception: brainstorming's first
+        # message closes Phase 0 and Phase 1 together — only when its Phase 0 checklist is complete.
+        ph, msg = state["phase"], payload.get("last_assistant_message")
+        r0 = score(0, msg, None, items_for(0, env, cwd)) if (ph, gate) == (0, 1) else None
+        if ph is None:
+            why = "no phase is set yet; type `/wf <n>` (or start brainstorming) first"
+        elif r0 is None:
+            why = f"phases move one at a time, only with your /wf ok (current: Phase {ph})"
+        elif not (r0["listed"] and r0["found"] == r0["total"]):
+            why = "its Phase 0 checklist is incomplete" + (f" (missing: {', '.join(r0['missing'])})"
+                                                           if r0["missing"] else "")
+        else:
+            why = None
+        if why:
+            state.update(gate_pending=None, notice=f"Your last message ended with `[[gate P{gate}]]` at Phase "
+                         f"{ph}; the plugin did not apply it: {why}. Stay in the current phase.")
+            store.save(cwd, state)
+            return output("Stop", None, f"⚠ Gate P{gate} marker at Phase {'–' if ph is None else ph} "
+                                        f"not applied — {why}")
+        move_to(state, gate)
+        state["timeline"]["0"] = dict(r0, status="combined")
+    if gate != state.get("gate_pending"):
         state["gate_pending"] = gate
         store.save(cwd, state)
     if gate is None:
@@ -1100,8 +1110,11 @@ def _skill_writing_plans(state, env, cwd):
                 "user; finish the spec and get its approval first.")
     note = ("When writing-plans asks for an execution method: do not ask yet — Phase 4 checkpoint, "
             "Phase 5 and Phase 6 come first; the method is chosen at the end of Phase 6.")
-    if ph in (3, 4):
-        return enter_phase(state, 4, env, cwd, "Entering Phase 4 (Plan). " + note)
+    if ph == 3:
+        return ("writing-plans was started, but the spec (Phase 3) gate is not approved yet (the user approves "
+                "only with `/wf ok`). Stop and tell the user; do not write the plan before that.")
+    if ph == 4:
+        return enter_phase(state, 4, env, cwd, "Phase 4 (Plan). " + note)
     return note
 
 
@@ -1114,8 +1127,11 @@ def _skill_executor(state, env, cwd):
             "matrix, schema, a public interface or the scale design; a task needs a file outside the plan. "
             "Before the workspace is deleted, copy the ledger's Ruling / parked / minor (deferred) / \"no reachable "
             "spec\" lines into the plan under `## Execution record`.")
-    if ph in (6, 7):
-        return enter_phase(state, 7, env, cwd, "Entering Phase 7 (TDD Build). " + note)
+    if ph == 6:
+        return ("Plan execution was started, but the Phase 6 gate is not approved yet (the user approves only "
+                "with `/wf ok`; that is the go to execute). Stop and ask the user before executing.")
+    if ph == 7:
+        return enter_phase(state, 7, env, cwd, "Phase 7 (TDD Build). " + note)
     return note
 
 
@@ -1166,9 +1182,9 @@ def on_skill(name, event, env, store, cwd):
 # what the user sees when a skill doesn't change the phase: (warning, reminder)
 SKILL_SHOW = {
     "brainstorming": ("", "already in this feature's Phases 0–3"),
-    "writing-plans": ("spec (Phase 3) is not approved yet", "execution-method question waits until Phase 6"),
-    "subagent-driven-development": ("Phases 5–6 are not done yet", "extra stop conditions + Execution record on"),
-    "executing-plans": ("Phases 5–6 are not done yet", "extra stop conditions + Execution record on"),
+    "writing-plans": ("spec (Phase 3) is not approved yet — /wf ok first", "execution-method question waits until Phase 6"),
+    "subagent-driven-development": ("Phase 6 gate is not approved yet — /wf ok first", "extra stop conditions + Execution record on"),
+    "executing-plans": ("Phase 6 gate is not approved yet — /wf ok first", "extra stop conditions + Execution record on"),
     "finishing-a-development-branch": ("hold until Phases 8–9 are approved", "only push + PR or keep; no merge"),
     "systematic-debugging": ("", "tier check + branch before any debugging edits"),
 }
@@ -1334,6 +1350,18 @@ def install_statusline(env):
 
 
 def on_prompt(payload, env, store, cwd):
+    out = _on_prompt(payload, env, store, cwd)
+    state = store.load(cwd)
+    note = state.pop("notice", None)
+    if note:   # tell Claude what the Stop hook refused last turn (a Stop line reaches only the user)
+        store.save(cwd, state)
+        out = out or {}
+        hso = out.setdefault("hookSpecificOutput", {"hookEventName": "UserPromptSubmit", "additionalContext": ""})
+        hso["additionalContext"] = ("wf: " + note + "\n\n" + hso.get("additionalContext", "")).strip()
+    return out
+
+
+def _on_prompt(payload, env, store, cwd):
     state = store.load(cwd)
     parsed = parse_command(payload.get("prompt", ""))
     if parsed:
