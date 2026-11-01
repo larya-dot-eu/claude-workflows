@@ -636,57 +636,21 @@ def run_command(cmd, args, state, store, env, cwd):
 
 
 # ---------------------------------------------------------------- per-phase checklists
-# What each gate must cover, from Claude-Workflows-Best-Practices.md. A hit means the item is
-# present (or explicitly N/A) in Claude's gate message or the phase's spec/plan file — it measures
-# coverage, not quality. Reading the gate stays the user's job.
+# What each gate must cover, from Claude-Workflows-Best-Practices.md. The hook never interprets
+# words in any language. It decides only from fixed tokens and exact text:
+#   - `- <label>: "<passage>"`  the passage is searched for, verbatim, in the spec/plan file
+#   - `- <label>: n/a — <why>`  not applicable (the reason may be in any language)
+#   - `- <label>: missing`      not done
+# Anything else on a label's line is a claim that the hook reports as claimed, not checked.
+# It measures coverage, not quality: reading the gate stays the user's job.
 
 # The labels live in the full doc: each phase ends with a line
 #   **Gate checklist:** item · item *(file)* · …
 # so the doc stays the single source of the rules (a project's own copy wins). Items marked (file)
-# must also appear in the spec/plan file; FILE_PATTERNS says how to find each of them there.
+# must be backed by a passage quoted from the spec/plan file.
 
 GATE_LINE = re.compile(r"^\*\*Gate checklist:\*\*\s*(.+)$", re.M)
-
-FILE_PATTERNS = {
-    "behavior": r"behaviou?r",
-    "interfaces": r"interface|input|output|\bapi\b|signature",
-    "edge cases": r"edge case|error state|error case",
-    "transactional integrity": r"transaction|atomic|eventual",
-    "assumptions": r"assumption",
-    "access-control matrix": r"access[- \n]control|access boundar|authori[sz]ation|permission",
-    "expected scale": r"\bscale\b|req(uests)?/s|\brows\b",
-    "reuse": r"\breuse|net-new",
-    "presentation vs logic": r"presentation|hardcod|\bconfig\b",
-    "global constraints": r"global constraints",
-    "ownership map": r"ownership map",
-    "exit state per step": r"exit state",
-    "verification per step": r"verif|^\s*Expected:",
-    "test matrix in tasks": r"\[(happy|sad|edge)\]|zombies",
-    "execution record": r"^#+\s*Execution record",
-}
-
-
-HEADING_RE = re.compile(r"^ {0,3}#{2,6}\s+(.+?)\s*#*\s*$", re.M)   # sections; the # title is skipped
-HEADING_NUM = re.compile(r"^(?:§\s*)?(\d+(?:\.\d+)*)\.?(?=[\s.):]|$)")
-CITED_NUM = re.compile(r"§\s*(\d+(?:\.\d+)*)")
-
-
-def cites_heading(value, file_text):
-    """True when the gate line points at a heading that exists in the file — by number (`§10`
-    matches `## 10. <any title>`) or by quoting the heading's title. Uses only the file's own
-    headings, so it does not depend on the spec's language or wording."""
-    heads = HEADING_RE.findall(file_text or "")
-    if not heads or not value:
-        return False
-    nums = {m.group(1).rstrip(".") for m in map(HEADING_NUM.match, heads) if m}
-    if any(c.rstrip(".") in nums for c in CITED_NUM.findall(value)):
-        return True
-    v = value.casefold()
-    for h in heads:
-        title = HEADING_NUM.sub("", h).strip(" .):—–-").casefold()
-        if len(title) >= 4 and re.search(r"(?<!\w)" + re.escape(title) + r"(?!\w)", v):
-            return True
-    return False
+EXEC_RECORD_RE = re.compile(r"^#+\s*Execution record", re.M | re.I)   # the heading the doc tells Claude to write
 
 
 def checks_from_doc(doc_text, n):
@@ -721,6 +685,7 @@ def items_for(n, env, cwd):
 # Phases whose gate claims are cross-checked against a file (the others are judged from the message).
 DEFAULT_DIRS = {"spec": ("docs/superpowers/specs", "docs/specs"), "plan": ("docs/superpowers/plans", "docs/plans")}
 PHASE_FILES = {3: "spec", 4: "plan", 6: "plan", 7: "plan"}
+MAX_FILE = 5_000_000   # bytes; a bigger spec/plan is reported as too large to check, never half-read
 
 
 def search_roots(cwd):
@@ -733,24 +698,33 @@ def search_roots(cwd):
     return roots
 
 
+def _is_text(p):
+    try:
+        with open(p, "rb") as f:
+            return b"\0" not in f.read(8192)
+    except OSError:
+        return False
+
+
 def doc_files(kind, cwd, dirs=None, since=0):
-    """[(mtime, path)] of spec or plan .md files changed after `since` ('/wf dirs' overrides the folders)."""
+    """[(mtime, path)] of the spec or plan files (any text file, any extension) changed after `since`
+    ('/wf dirs' overrides the folders). Hidden and binary files are skipped."""
     folders = ((dirs or {}).get(kind),) if (dirs or {}).get(kind) else DEFAULT_DIRS[kind]
     out = []
     for root in search_roots(cwd):
         for d in folders:
-            for p in (root / d).glob("*.md"):
+            for p in (root / d).glob("*"):
                 try:
-                    if p.is_file() and p.stat().st_mtime > since:
+                    if (not p.name.startswith(".") and p.is_file() and p.stat().st_mtime > since
+                            and _is_text(p)):
                         out.append((p.stat().st_mtime, p))
                 except OSError:
                     pass
     return sorted(out)
 
 
-NEGATIVE = re.compile(r"^\W*(missing|todo|tbd|not (yet )?(done|covered|written|checked|included)|"
-                      r"skipped|left out|none yet|pending|partial(ly)?|incomplete|\?+)(\W|$)", re.I)
-NA = re.compile(r"^\W*n/?a\b", re.I)
+NA = re.compile(r"^\W*n/?a(\W|$)", re.I)            # fixed token, not a word list
+MISSING = re.compile(r"^\W*missing(\W|$)", re.I)    # fixed token, not a word list
 
 
 def checklist_lines(message):
@@ -766,32 +740,92 @@ def checklist_lines(message):
     return out
 
 
+# ---- quoted passages: exact text, compared after normalising only how it is written
+
+QUOTE_PAIRS = (('"', '"'), ("\u201c", "\u201d"), ("\u201e", "\u201c"), ("\u201e", "\u201d"),
+               ("\u00ab", "\u00bb"), ("\u00bb", "\u00ab"), ("\u2039", "\u203a"), ("\u300c", "\u300d"),
+               ("\u300e", "\u300f"), ("`", "`"))
+QUOTE_RE = re.compile("|".join(re.escape(a) + "(.+?)" + re.escape(b) for a, b in QUOTE_PAIRS))
+MIN_QUOTE = 15   # characters, not counting spaces: long enough to point at real content
+
+_CHAR_MAP = str.maketrans({**{c: "-" for c in "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"},
+                           **{c: "'" for c in "\u2018\u2019\u201a\u201b\u2032"},
+                           **{c: '"' for c in "\u201c\u201d\u201e\u201f\u00ab\u00bb\u2039\u203a\u2033"},
+                           **{c: " " for c in "\u00a0\u2007\u202f\u200b\u2060\ufeff"}})
+_LINE_MARK = re.compile(r"^[ \t]*(?:[#>|]+|[-*+](?=\s))[ \t]*", re.M)   # heading, quote, table, bullet marks
+_LINK = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
+
+
+def norm_text(text):
+    """Text reduced to what it says, not how it is formatted: Unicode NFKC, case folded, typographic
+    dashes/quotes/spaces made plain, Markdown marks (line prefixes, links, emphasis, table pipes)
+    dropped and all whitespace, line breaks included, collapsed to one space. Language-blind."""
+    import unicodedata
+    t = unicodedata.normalize("NFKC", text or "").translate(_CHAR_MAP)
+    t = _LINK.sub(r"\1", _LINE_MARK.sub("", t))
+    t = re.sub(r"[*_`~|]", "", t)
+    return re.sub(r"\s+", " ", t).casefold().strip()
+
+
+def quotes_in(value):
+    """The passages quoted on a checklist line, in order."""
+    return [m for g in QUOTE_RE.findall(value or "") for m in (g if isinstance(g, tuple) else (g,)) if m]
+
+
+def check_quotes(value, norm_file, used):
+    """('found', key) or (reason, None) for a covered item's quoted passages. `used` holds the
+    passages earlier items already used: each item must stand on a passage of its own."""
+    qs = [norm_text(q) for q in quotes_in(value)]
+    if not qs:
+        return "no quote", None
+    long_enough = [q for q in qs if len(q.replace(" ", "")) >= MIN_QUOTE]
+    if not long_enough:
+        return "quote too short", None
+    fresh = [q for q in long_enough if q not in used]
+    if not fresh:
+        return "same quote as another item", None
+    for q in fresh:
+        if q in norm_file:
+            return "found", q
+    return "quote not in file", None
+
+
 def score(n, message, file_text=None, items=None):
-    """Score phase n's gate. An item counts only when Claude's gate message has a line
-    '- <label>: <where it is covered>' or '- <label>: N/A — why'. Negative answers (missing, TBD,
-    left out, …) don't count, and where a spec/plan file exists, a covered item whose topic isn't
-    in that file (no keyword hit, and the line cites no heading the file has) is 'unverified'."""
+    """Score phase n's gate from Claude's checklist lines '- <label>: <value>'.
+    An item counts when its value is `n/a …`, or — for a (file) item while a spec/plan file exists —
+    a quoted passage found in that file, or — for any other item — any value except `missing`.
+    Covered (file) items that fail the quote check are listed in `unverified` with the reason;
+    items counted without a check are listed in `claimed`."""
     items = CHECKS.get(n, []) if items is None else items
     lines = checklist_lines(message)
-    found, missing, unverified, listed = 0, [], [], 0
+    norm_file = norm_text(file_text) if file_text is not None else None
+    found, missing, unverified, claimed, reasons, listed, used = 0, [], [], [], {}, 0, set()
     for label, is_file in items:
         value = lines.get(label.lower())
         if value is not None:
             listed += 1
-        rx = FILE_PATTERNS.get(label) if is_file else None
-        if not value or NEGATIVE.match(value):
+        if not value or MISSING.match(value):
             missing.append(label)
-        elif (rx and file_text is not None and not NA.match(value)
-              and not re.search(rx, file_text, re.I | re.M) and not cites_heading(value, file_text)):
-            unverified.append(label)
+        elif NA.match(value):
+            found += 1
+        elif is_file and norm_file is not None:
+            why, key = check_quotes(value, norm_file, used)
+            if key:
+                used.add(key)
+                found += 1
+            else:
+                unverified.append(label)
+                reasons[label] = why
         else:
             found += 1
-    return {"found": found, "total": len(items), "missing": missing,
-            "unverified": unverified, "listed": listed}
+            claimed.append(label)
+    return {"found": found, "total": len(items), "missing": missing, "unverified": unverified,
+            "reasons": reasons, "claimed": claimed, "listed": listed}
 
 
-def phase_file(n, cwd, state=None):
-    """Text of the newest spec (P3) or plan (P4, P6, P7) file changed since this feature started, or None."""
+def phase_doc(n, cwd, state=None):
+    """{'name', 'text'} of the newest spec (P3) or plan (P4, P6, P7) file changed since this feature
+    started ('text' is None when it is too large or unreadable), or None when there is none."""
     kind = PHASE_FILES.get(n)
     if not kind:
         return None
@@ -799,20 +833,37 @@ def phase_file(n, cwd, state=None):
     files = doc_files(kind, cwd, state.get("dirs"), state.get("feature_start") or 0)
     if not files:
         return None
+    p = files[-1][1]
     try:
-        with open(files[-1][1], errors="ignore") as f:
-            return f.read(500_000)
+        if p.stat().st_size > MAX_FILE:
+            return {"name": p.name, "text": None, "why": "too large to check"}
+        return {"name": p.name, "text": p.read_text(encoding="utf-8", errors="replace")}
     except OSError:
-        return None
+        return {"name": p.name, "text": None, "why": "unreadable"}
+
+
+def phase_file(n, cwd, state=None):
+    """Text of phase n's spec/plan file, or None."""
+    d = phase_doc(n, cwd, state)
+    return d and d["text"]
 
 
 def checklist_instruction(n, items=None):
-    labels = [l for l, _ in (CHECKS.get(n, []) if items is None else items)]
-    if not labels:
+    items = CHECKS.get(n, []) if items is None else items
+    if not items:
         return ""
-    return (f"At the Phase {n} gate, just before `[[gate P{n}]]`, list one line per checklist item, using these "
-            f"exact labels: " + "; ".join(labels) + ". Format: `- <label>: <where it is covered, e.g. spec §4>` or "
-            "`- <label>: N/A — <why>`. Never list an item you did not do as covered.")
+    labels = [l for l, _ in items]
+    files = [l for l, f in items if f]
+    where = {"spec": "the spec", "plan": "the plan"}.get(PHASE_FILES.get(n), "the spec/plan")
+    text = (f"At the Phase {n} gate, just before `[[gate P{n}]]`, list one line per checklist item, using these "
+            f"exact labels: " + "; ".join(labels) + ". Format: `- <label>: <where it is covered>`, "
+            "`- <label>: n/a — <why>` or `- <label>: missing`. Never list an item you did not do as covered.")
+    if files:
+        text += (f" For " + "; ".join(files) + f": the value must contain a passage copied word for word "
+                 f"from {where} file, in double quotes (at least {MIN_QUOTE} characters, a different passage "
+                 "for each item), e.g. `- " + files[0] + ": \"<exact sentence from the file>\" (section …)`. "
+                 "The hook searches the file for that exact text.")
+    return text
 
 
 def gate_line(n, entry):
@@ -824,9 +875,20 @@ def gate_line(n, entry):
     tail = []
     if entry["missing"]:
         tail.append("missing: " + ", ".join(entry["missing"]))
-    if entry.get("unverified"):
-        tail.append("not in file: " + ", ".join(entry["unverified"]))
-    return head + (" · " + " · ".join(tail) if tail else " · all items ✓")
+    by_reason = {}
+    for label in entry.get("unverified") or []:
+        by_reason.setdefault((entry.get("reasons") or {}).get(label, "not checked"), []).append(label)
+    for why, labels in by_reason.items():
+        tail.append(f"{why}: " + ", ".join(labels))
+    if entry.get("file_note"):
+        tail.append(entry["file_note"])
+    elif entry.get("file"):
+        tail.append(f"{entry.get('checked') or 0} quoted in {entry['file']}")
+    if entry.get("claimed"):
+        tail.append(f"{len(entry['claimed'])} claimed, not checked")
+    tail.append("content not judged — your review")
+    return head + " · " + " · ".join(tail)
+
 
 
 # ---------------------------------------------------------------- phase engine
@@ -936,6 +998,10 @@ def engine_on(state):
     return state["enabled"] == "on" and state["level"] != "lite"
 
 
+SCORE_KEYS = ("found", "total", "missing", "unverified", "reasons", "claimed", "listed", "file", "file_note",
+              "checked")
+
+
 def on_stop(payload, env, store, cwd):
     state = store.load(cwd)
     if not engine_on(state):
@@ -966,11 +1032,20 @@ def on_stop(payload, env, store, cwd):
     if gate is None:
         return None
     items = items_for(gate, env, cwd)
-    r = score(gate, payload.get("last_assistant_message"), phase_file(gate, cwd, state), items)
+    doc = phase_doc(gate, cwd, state)
+    r = score(gate, payload.get("last_assistant_message"), doc and doc["text"], items)
+    if any(f for _, f in items) and gate in PHASE_FILES:
+        if doc is None:
+            r.update(file_note=f"no {PHASE_FILES[gate]} file changed since this feature started — quotes not checked")
+        else:
+            r.update(file=doc["name"],
+                     file_note=f"{doc['name']} {doc['why']} — quotes not checked" if doc.get("why") else None,
+                     checked=sum(1 for l, f in items if f and l not in r["missing"] + r["unverified"]
+                                 + r["claimed"]) if doc["text"] is not None else 0)
     tl = state.setdefault("timeline", {})
     prev = tl.get(str(gate), {})
     if not r["listed"] and prev.get("listed"):
-        r = {k: prev[k] for k in ("found", "total", "missing", "unverified", "listed")}  # keep last real score
+        r = {k: prev[k] for k in SCORE_KEYS if k in prev}   # keep last real score
     missing = r["missing"] + r["unverified"]
     entry = dict(prev, **r)
     tl[str(gate)] = entry
@@ -981,7 +1056,8 @@ def on_stop(payload, env, store, cwd):
         entry["nudged"] = True
         out["decision"] = "block"
         out["reason"] = (f"Workflow checklist for the Phase {gate} gate is incomplete. Missing: "
-                         f"{', '.join(missing)}. Do each one (or decide it is N/A, with the reason), then end "
+                         f"{', '.join(missing)}. Do each one (or decide it is n/a, with the reason); for a "
+                         "(file) item, quote the exact passage from the file. Then end "
                          f"with the checklist lines and `[[gate P{gate}]]` again. {checklist_instruction(gate, items)} "
                          "(This reminder comes once per gate.)")
     store.save(cwd, state)
@@ -1017,7 +1093,7 @@ def _skill_brainstorming(state, env, cwd):
                        "answers before its approaches message (`[[gate P2]]`); its design doc is the Phase 3 "
                        "spec (`[[gate P3]]`). Phase 0 checklist labels: "
                        + "; ".join(l for l, _ in items_for(0, env, cwd)) + ". Format of each line: "
-                       "`- <label>: <where covered>` or `- <label>: N/A — <why>`.")
+                       "`- <label>: <where covered>`, `- <label>: n/a — <why>` or `- <label>: missing`.")
 
 
 def _skill_writing_plans(state, env, cwd):
@@ -1119,7 +1195,7 @@ def guess_phase(cwd, since=0, dirs=None):
     plans, specs = doc_files("plan", cwd, dirs, since), doc_files("spec", cwd, dirs, since)
     for _, p in plans:
         try:
-            if re.search(FILE_PATTERNS["execution record"], p.read_text(errors="ignore"), re.I | re.M):
+            if EXEC_RECORD_RE.search(p.read_text(encoding="utf-8", errors="replace")):
                 return 8, f"plan {p} has an Execution record"
         except OSError:
             pass

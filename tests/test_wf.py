@@ -1,6 +1,7 @@
 """Tests for scripts/wf.py — run with: python3 -m unittest discover -s tests"""
 import json
 import os
+import random
 import re
 import subprocess
 import sys
@@ -756,6 +757,29 @@ def checklist(n, skip=(), bad=None):
     return "Gate summary\n" + "\n".join(lines) + f"\n\n[[gate P{n}]]"
 
 
+def file_labels(n):
+    return [l for l, f in wf.CHECKS[n] if f]
+
+
+def passage(i):
+    return f"Passage {i}: lorem ipsum dolor sit amet number {i}."
+
+
+QUOTE_SPEC = "Spec\n\n" + "\n\n".join(passage(i) for i in range(20)) + "\n"
+
+
+def quoted(n):
+    """A gate message for phase n whose (file) items each quote their own passage of QUOTE_SPEC."""
+    lines, i = [], 0
+    for label, is_file in wf.CHECKS[n]:
+        if is_file:
+            lines.append(f'- {label}: "{passage(i)}" (section {i})')
+            i += 1
+        else:
+            lines.append(f"- {label}: covered in the gate message")
+    return "Gate summary\n" + "\n".join(lines) + f"\n\n[[gate P{n}]]"
+
+
 class TestChecklist(EngineCase):
     def test_every_phase_has_a_checklist_with_unique_labels(self):
         for n in range(0, 11):
@@ -772,44 +796,93 @@ class TestChecklist(EngineCase):
                "reuse, and presentation vs logic.\n[[gate P3]]")
         self.assertEqual(wf.score(3, msg)["found"], 0)
 
-    def test_negative_answers_do_not_count(self):
-        for val in ("missing", "TODO", "TBD", "not covered yet", "left out", "?", "skipped",
-                    "**not covered** (left out)", "**partially done**, only opened calc.py", "partial"):
+    def test_only_the_missing_token_or_nothing_counts_as_missing(self):
+        for val in ("missing", "Missing — later", "**missing**", ""):
             r = wf.score(1, checklist(1, bad=("constraints", val)))
             self.assertIn("constraints", r["missing"], val)
 
-    def test_na_with_reason_counts(self):
-        r = wf.score(1, checklist(1, bad=("constraints", "N/A — greenfield, none")))
-        self.assertEqual(r["missing"], [])
+    def test_words_are_never_interpreted(self):
+        # The hook reads no language: a free-text value is a claim, reported as "claimed, not checked".
+        for val in ("TBD", "fehlt", "lipsește", "falta", "manca"):
+            r = wf.score(1, checklist(1, bad=("constraints", val)))
+            self.assertIn("constraints", r["claimed"], val)
 
-    def test_claim_not_found_in_spec_file_is_unverified(self):
+    def test_na_with_reason_counts(self):
+        for val in ("n/a — greenfield, none", "N/A — keine", "NA: niciuna"):
+            r = wf.score(1, checklist(1, bad=("constraints", val)))
+            self.assertEqual(r["missing"], [], val)
+
+    def test_quote_not_found_in_spec_file_is_unverified(self):
         d = self.e.repo / "docs/superpowers/specs"
         d.mkdir(parents=True)
-        (d / "s-design.md").write_text(FULL_SPEC.replace("Access-control\nmatrix: no access boundaries.", ""))
-        r = wf.score(3, checklist(3), wf.phase_file(3, str(self.e.repo)))
-        self.assertEqual(r["unverified"], ["access-control matrix"])
+        label = file_labels(3)[0]
+        (d / "s-design.md").write_text(QUOTE_SPEC.replace(passage(0), "other text entirely"))
+        r = wf.score(3, quoted(3), wf.phase_file(3, str(self.e.repo)))
+        self.assertEqual(r["unverified"], [label])
+        self.assertEqual(r["reasons"][label], "quote not in file")
         self.assertEqual(r["found"], r["total"] - 1)
 
-    # Headings are placeholders with none of the English keywords, so only the citation can verify.
-    NUMBERED_SPEC = "# Title\n\n" + "".join(f"## {i}. Lorem {i}\n\nipsum\n\n" for i in range(1, 19))
-    CITING_GATE = "\n".join(f"- {label}: spec §{i}" for i, (label, _) in enumerate(wf.CHECKS[3], 1)) + "\n\n[[gate P3]]"
+    def test_all_quotes_found_scores_100(self):
+        r = wf.score(3, quoted(3), QUOTE_SPEC)
+        self.assertEqual((r["found"], r["unverified"]), (r["total"], []))
 
-    def test_spec_without_keywords_verifies_by_cited_section(self):
-        r = wf.score(3, self.CITING_GATE, self.NUMBERED_SPEC)
-        self.assertEqual((r["unverified"], r["found"]), ([], r["total"]))
+    def test_quote_check_ignores_language_and_structure(self):
+        # Prose in any script, no headings, no numbering, any symbols: only the quoted text matters.
+        rng = random.Random(7)
+        alphabet = "abcdefghijklmnopqrstuvwxyzăâîșțäöüßñçãõéèàìòùαβγδεжзиклмнあいうえおابتث"
+        for _ in range(20):
+            words = ["".join(rng.choice(alphabet) for _ in range(rng.randint(2, 9))) for _ in range(400)]
+            text = " ".join(words)
+            items = [("a", True), ("b", True)]
+            qa, qb = " ".join(words[10:16]), " ".join(words[200:206])
+            msg = f'- a: "{qa}"\n- b: «{qb}» (any note)\n[[gate P3]]'
+            self.assertEqual(wf.score(3, msg, text, items)["unverified"], [], text[:40])
 
-    def test_citing_a_section_the_file_lacks_stays_unverified(self):
-        label = wf.CHECKS[3][0][0]
-        r = wf.score(3, self.CITING_GATE.replace(f"{label}: spec §1\n", f"{label}: spec §99\n"), self.NUMBERED_SPEC)
-        self.assertEqual(r["unverified"], [label])
-
-    def test_spec_without_keywords_verifies_by_heading_title(self):
-        spec = "## Lorem ipsum\ndolor\n\n## Dolor sit\namet\n"
-        items = [("interfaces", True), ("edge cases", True)]
-        msg = "- interfaces: \"Lorem ipsum\"\n- edge cases: Dolor sit\n[[gate P3]]"
+    def test_quote_survives_formatting_and_line_wraps(self):
+        spec = ("## 2.1 Lorem\n\n- **The report** is generated\n  only for the _selected_ period,\n"
+                "| col | the “quoted” value — here |\n")
+        items = [("a", True), ("b", True)]
+        msg = ('- a: "The report is generated only for the selected period"\n'
+               '- b: "the \\"quoted\\" value - here"\n[[gate P3]]')
+        msg = msg.replace('\\"quoted\\"', "“quoted”")
         self.assertEqual(wf.score(3, msg, spec, items)["unverified"], [])
-        r = wf.score(3, msg.replace("Dolor sit", "Consectetur"), spec, items)
-        self.assertEqual(r["unverified"], ["edge cases"])
+
+    def test_paraphrase_short_and_reused_quotes_are_rejected(self):
+        spec = "The report is generated only for the selected period of time.\n"
+        items = [("a", True), ("b", True)]
+        cases = {
+            '- a: "A report gets generated for the chosen period"': "quote not in file",
+            '- a: "report"': "quote too short",
+            "- a: the report section": "no quote",
+        }
+        for line, why in cases.items():
+            r = wf.score(3, line + '\n- b: "generated only for the selected period"\n', spec, items)
+            self.assertEqual(r["reasons"].get("a"), why, line)
+        same = '- a: "generated only for the selected period"\n- b: "generated only for the selected period"'
+        r = wf.score(3, same, spec, items)
+        self.assertEqual(r["reasons"], {"b": "same quote as another item"})
+
+    def test_section_citation_alone_is_not_proof(self):
+        r = wf.score(3, "\n".join(f"- {l}: spec §1" for l, _ in wf.CHECKS[3]), QUOTE_SPEC)
+        self.assertEqual(sorted(r["unverified"]), sorted(file_labels(3)))
+
+    def test_gate_line_names_the_file_and_never_claims_content(self):
+        d = self.e.repo / "docs/superpowers/specs"
+        d.mkdir(parents=True)
+        self.e.prompt("/wf 3")
+        (d / "feature.txt").write_text(QUOTE_SPEC)          # any text file, any extension
+        (d / ".hidden.md").write_text("x")                  # hidden and binary files are skipped
+        (d / "diagram.png").write_bytes(b"\x89PNG\0\0")
+        line = shown(self.stop(quoted(3)))
+        self.assertIn(f"{len(file_labels(3))} quoted in feature.txt", line)
+        self.assertIn("content not judged", line)
+        self.assertNotIn("✓", line)
+
+    def test_no_spec_file_is_said_not_hidden(self):
+        self.e.prompt("/wf 3")
+        line = shown(self.stop(quoted(3)))
+        self.assertIn("no spec file", line)
+        self.assertIn("claimed, not checked", line)
 
     def test_gate_line_shows_score_missing_and_unverified(self):
         self.e.prompt("/wf 3")
@@ -847,7 +920,7 @@ class TestStrictNudge(EngineCase):
         out = self.gate3()
         self.assertEqual(out.get("decision"), "block")
         self.assertIn("access-control matrix", out["reason"])
-        self.assertIn("N/A", out["reason"])
+        self.assertIn("n/a", out["reason"])
         self.assertIn("[[gate P3]]", out["reason"])
         self.assertIn("missing", shown(out))
         again = self.gate3()                       # Claude ends at the gate again, still incomplete
@@ -1151,12 +1224,6 @@ class TestChecklistFromDoc(unittest.TestCase):
             self.assertEqual([l for l, _ in items], [l for l, _ in wf.CHECKS[n]], n)
             self.assertGreaterEqual(len(items), 3, n)
 
-    def test_every_file_item_has_a_pattern(self):
-        for n, items in wf.CHECKS.items():
-            for label, is_file in items:
-                if is_file:
-                    self.assertIn(label, wf.FILE_PATTERNS, (n, label))
-
     def test_project_doc_labels_win(self):
         e = Env()
         try:
@@ -1168,15 +1235,16 @@ class TestChecklistFromDoc(unittest.TestCase):
         finally:
             e.close()
 
-    def test_superpowers_plan_format_only_flags_real_file_gaps(self):
-        r = wf.score(4, checklist(4), SP_PLAN)
-        self.assertEqual(r["unverified"], ["exit state per step"])   # the doc requires it; writing-plans doesn't add it
+    def test_plan_quotes_only_flag_real_file_gaps(self):
+        msg = quoted(4).replace(passage(2), "Each step ends in a working state.")
+        r = wf.score(4, msg, QUOTE_SPEC)
+        self.assertEqual(r["unverified"], [file_labels(4)[2]])
 
     def test_chat_items_are_never_checked_against_files(self):
-        r = wf.score(6, checklist(6), SP_PLAN)
+        r = wf.score(6, quoted(6), QUOTE_SPEC)
+        chat = [l for l, f in wf.CHECKS[6] if not f]
         self.assertEqual(r["unverified"], [])
-        r = wf.score(3, checklist(3), FULL_SPEC.replace("Checkpoint: no conflicts with existing code, no unverified assumptions.", ""))
-        self.assertEqual(r["unverified"], [])
+        self.assertEqual(sorted(r["claimed"]), sorted(chat))
 
 
 class TestFilesFromWorktreeAndCustomDirs(unittest.TestCase):

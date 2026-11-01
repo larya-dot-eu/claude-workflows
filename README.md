@@ -141,7 +141,7 @@ What a feature looks like:
 | "Let's add CSV export to reports" | `WF ▸ brainstorming started → Phase 0 (Tier + Prereqs)` |
 | *(Claude summarises the project and the request, ends with its checklist)* | `WF ▸ Gate P1 reached · checklist 8/8 (100%) · all items ✓` |
 | `approved` | `WF ▸ Gate P1 approved → Phase 2 (Explore)` |
-| *(questions … the spec)* | `WF ▸ Gate P3 reached · checklist 8/10 (80%) · missing: access-control matrix, expected scale` |
+| *(questions … the spec)* | `WF ▸ Gate P3 reached · checklist 8/10 (80%) · missing: access-control matrix, expected scale · … · content not judged — your review` |
 | "the matrix: only report owners may export" | *(Claude adds it and ends at the gate again)* `· checklist 10/10` |
 | `approved` | `WF ▸ Gate P3 approved → Phase 4 (Plan)` … and so on to Phase 10 |
 | `/wf status` | `P0 ✓ · P1 ✓ · P2 ✓ · P3 ✓ · P4 70% (gate)` |
@@ -211,17 +211,20 @@ marker for an earlier phase is treated as a recap and never erases your timeline
 ```
 WF ▸ brainstorming started → Phase 0 (Tier + Prereqs)
 WF ▸ Gate P1 approved → Phase 2 (Explore)
-WF ▸ Gate P3 reached · checklist 7/10 (70%) · missing: access-control matrix, expected scale · not in file: reuse
+WF ▸ Gate P3 reached · checklist 8/10 (80%) · missing: expected scale · quote not in file: reuse · 7 quoted in 2026-11-01-report.md · 1 claimed, not checked · content not judged — your review
 WF ▸ ⚠ writing-plans — spec (Phase 3) is not approved yet
 ```
 
 - **Checklist %** — every gate has a checklist taken from the full doc. Claude lists each item on its own
-  line (`- expected scale: §4 of the spec` or `- expected scale: N/A — pure function`). Only real answers
-  count: *missing*, *TBD*, *left out*, *partially* don't. For the spec (P3) and plan (P4, P6) the hook also
-  checks the file: an item Claude calls covered that isn't in the file shows as *not in file*. The file
-  check passes on the item's English keywords *or* when the line cites a section the file really has
-  (`§10` → `## 10. <any title>`, or the heading's title), whatever the spec's language. It measures
-  **coverage, not quality** — reading the gate is still your job.
+  line: `- <item>: <where it is covered>`, `- <item>: n/a — <why>` or `- <item>: missing`. The plugin reads
+  no language: it decides only from those fixed tokens and from exact text. For the spec (P3) and plan
+  (P4, P6, P7), items marked *(file)* must quote a passage word for word from the file
+  (`- interfaces: "<exact sentence>"`); the plugin searches the newest spec/plan file for that text
+  (formatting, line wraps and typographic quotes don't matter; the passage must be at least 15
+  characters and different for each item). The line then says what failed (`quote not in file`,
+  `no quote`, `quote too short`, `same quote as another item`) and how many items are only
+  *claimed, not checked*. It measures **coverage, not quality** — the line ends with
+  *content not judged — your review*, because reading the gate is still your job.
 - **Timeline** — `/wf status` shows `P0 ✓ · P1 ✓ · P2 ⚠ skipped · P3 70% (gate)`. A phase left without an
   approved gate (Claude jumping ahead, a skill starting early) is marked *skipped*, so you can see whether
   brainstorming really went through Phases 1, 2 and 3.
