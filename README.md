@@ -239,6 +239,15 @@ WF ▸ ⚠ Gate P7 marker at Phase 3 not applied — phases move one at a time, 
   approved gate (you jumping ahead with `/wf <n>`) is marked *skipped*, so the timeline always shows which
   gates were really approved.
 - **Status line** — `[WF P3 70% · ✓✓⚠ · standard]` (current phase, its checklist %, earlier phases).
+- **Protected checks** — when you approve the spec (P3) or plan (P4, P6, P7) gate, the plugin pins that
+  file (path + SHA-256). Later gates check the pinned file, never a newer one that appears next to it
+  (`⚠ newer file … not checked`), and a spec edited after its approval is flagged
+  (`⚠ spec … changed after its Phase 3 approval — re-read it`). The checklists are snapshotted when a
+  feature starts, so a project rules doc that drops items mid-feature shows
+  `⚠ rules changed since this feature started: −2 items (…)`, and a project doc without a checklist
+  for a phase says the built-in one is used. Writes to the plugin's own state folder (with Write/Edit,
+  or a shell command naming that folder) ask you first: only your `/wf` commands should change phases
+  and approvals. The shell check is best effort — it looks for the folder's path in the command.
 - **Safe output** — every line the plugin prints is cleaned first: control characters (terminal escape
   sequences), invisible bidi/zero-width characters are removed and lines are length-capped, because
   checklist labels, file names and branch names come from the project. If your locale isn't UTF-8

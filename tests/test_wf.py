@@ -1,13 +1,14 @@
 """Tests for scripts/wf.py — run with: python3 -m unittest discover -s tests"""
+import hashlib
 import json
 import os
 import random
-import unicodedata
 import re
 import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import unittest
 from pathlib import Path
 
@@ -1643,3 +1644,76 @@ class TestStatuslineCoexistence(StatuslineCase):
         out = self.e.prompt("/wf statusline off")
         self.assertIn("printf OTHER", self.settings.read_text())
         self.assertIn("not installed", shown(out).lower())
+
+
+class TestProtectedChecks(EngineCase):
+    def spec_dir(self):
+        d = self.e.repo / "docs/superpowers/specs"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def approve_spec(self):
+        self.e.prompt("/wf 3")
+        (self.spec_dir() / "a-design.md").write_text(QUOTE_SPEC)
+        self.stop(quoted(3))
+        self.e.prompt("/wf ok")
+
+    def test_approved_spec_is_pinned(self):
+        self.approve_spec()
+        pin = self.e.state()["pins"]["spec"]
+        self.assertTrue(pin["path"].endswith("a-design.md"))
+        self.assertEqual(pin["sha"], hashlib.sha256(QUOTE_SPEC.encode()).hexdigest())
+
+    def test_spec_changed_after_approval_is_flagged(self):
+        self.approve_spec()
+        self.assertNotIn("changed after", shown(self.stop("plan\n[[gate P4]]")))
+        (self.spec_dir() / "a-design.md").write_text(QUOTE_SPEC + "\nOne more rule.")
+        self.assertIn("spec a-design.md changed after its Phase 3 approval", shown(self.stop("plan\n[[gate P4]]")))
+
+    def test_newer_file_does_not_replace_the_approved_one(self):
+        self.approve_spec()
+        self.e.prompt("/wf 4")
+        d = self.e.repo / "docs/superpowers/plans"
+        d.mkdir(parents=True)
+        (d / "plan.md").write_text(QUOTE_SPEC)
+        self.stop(quoted(4))
+        self.e.prompt("/wf ok")
+        self.e.prompt("/wf 6")
+        time.sleep(0.01)
+        (d / "zz-decoy.md").write_text("nothing here")
+        line = shown(self.stop(quoted(6)))
+        self.assertIn("quoted in plan.md", line)
+        self.assertIn("newer file zz-decoy.md not checked", line)
+
+    def test_loop_back_releases_the_pin(self):
+        self.approve_spec()
+        self.e.prompt("/wf 3")
+        self.assertNotIn("spec", self.e.state().get("pins") or {})
+
+    def test_rules_doc_dropping_items_mid_feature_is_flagged(self):
+        doc = self.e.repo / "Claude-Workflows-Best-Practices.md"
+        full = (ROOT / "Claude-Workflows-Best-Practices.md").read_text()
+        doc.write_text(full)
+        self.e.prompt("/wf new")
+        self.e.prompt("/wf 2")
+        doc.write_text(full.replace(" · prior-solution search", "").replace(" · what's different", ""))
+        line = shown(self.stop(checklist(2)))
+        self.assertIn("rules changed since this feature started: −2 items", line)
+
+    def test_project_doc_without_checklist_says_built_in_is_used(self):
+        (self.e.repo / "Claude-Workflows-Best-Practices.md").write_text("## Phase 2 — Erkunden\nRegeln\n")
+        self.e.prompt("/wf 2")
+        self.assertIn("using the plugin's built-in one", shown(self.stop(checklist(2))))
+
+    def test_writes_to_plugin_state_ask_the_user(self):
+        state_file = str(self.e.data / "state" / "x.json")
+        for tool, ti in (("Write", {"file_path": state_file}), ("Edit", {"file_path": state_file}),
+                         ("Bash", {"command": f"echo '{{}}' > {state_file}"})):
+            out = self.e.run("PreToolUse", tool_name=tool, tool_input=ti)
+            self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "ask", tool)
+        out = self.e.run("PreToolUse", tool_name="Write", tool_input={"file_path": str(self.e.repo / "a.py")})
+        self.assertIsNone(out)
+
+    def test_hooks_json_routes_file_writes_to_the_guard(self):
+        hooks = json.loads((ROOT / "hooks/hooks.json").read_text())["hooks"]["PreToolUse"]
+        self.assertTrue(any("Write" in h.get("matcher", "") and "Edit" in h["matcher"] for h in hooks))

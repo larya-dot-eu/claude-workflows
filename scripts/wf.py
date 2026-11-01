@@ -743,6 +743,32 @@ def items_for(n, env, cwd):
     return checks_from_doc(read_doc(DOC, env, cwd), n) or CHECKS.get(n, [])
 
 
+def rules_note(n, env, cwd):
+    """Say so when a project's own rules doc gives phase n no checklist and the built-in one is used."""
+    p = doc_path(DOC, env, cwd)
+    root = env.get("CLAUDE_PLUGIN_ROOT")
+    if not p or (root and p.resolve() == (Path(root) / DOC).resolve()) or not CHECKS.get(n):
+        return None
+    if checks_from_doc(read_doc(DOC, env, cwd), n):
+        return None
+    return f"{p.name} in this project has no Gate checklist for Phase {n} — using the plugin's built-in one"
+
+
+def snapshot_rules(state, env, cwd):
+    """Remember each phase's checklist labels when a feature starts, so a later edit of the rules doc
+    that drops items shows up at the gate instead of silently lowering the bar."""
+    if state.get("rules") is None and state.get("phase") is not None:
+        state["rules"] = {str(k): [l for l, _ in items_for(k, env, cwd)] for k in range(0, 11)}
+        return True
+    return False
+
+
+def rules_dropped(state, n, items):
+    before = (state.get("rules") or {}).get(str(n)) or []
+    now = {l for l, _ in items}
+    return [l for l in before if l not in now]
+
+
 # Phases whose gate claims are cross-checked against a file (the others are judged from the message).
 DEFAULT_DIRS = {"spec": ("docs/superpowers/specs", "docs/specs"), "plan": ("docs/superpowers/plans", "docs/plans")}
 PHASE_FILES = {3: "spec", 4: "plan", 6: "plan", 7: "plan"}
@@ -884,23 +910,39 @@ def score(n, message, file_text=None, items=None):
             "reasons": reasons, "claimed": claimed, "listed": listed}
 
 
+def file_sha(p):
+    try:
+        return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
 def phase_doc(n, cwd, state=None):
-    """{'name', 'text'} of the newest spec (P3) or plan (P4, P6, P7) file changed since this feature
-    started ('text' is None when it is too large or unreadable), or None when there is none."""
+    """{'name', 'path', 'text'} of the spec (P3) or plan (P4, P6, P7) file to check, or None when there is
+    none. Once a gate pinned a file (see approve), that file is checked, never a newer one that
+    appeared next to it ('newer' names it). 'text' is None when the file is too large or unreadable."""
     kind = PHASE_FILES.get(n)
     if not kind:
         return None
     state = state or {}
     files = doc_files(kind, cwd, state.get("dirs"), state.get("feature_start") or 0)
-    if not files:
+    pin = (state.get("pins") or {}).get(kind)
+    newer = None
+    if pin and Path(pin["path"]).is_file():
+        p = Path(pin["path"])
+        if files and files[-1][1].resolve() != p.resolve():
+            newer = files[-1][1].name
+    elif files:
+        p = files[-1][1]
+    else:
         return None
-    p = files[-1][1]
+    d = {"name": p.name, "path": str(p), "newer": newer}
     try:
         if p.stat().st_size > MAX_FILE:
-            return {"name": p.name, "text": None, "why": "too large to check"}
-        return {"name": p.name, "text": p.read_text(encoding="utf-8", errors="replace")}
+            return dict(d, text=None, why="too large to check")
+        return dict(d, text=p.read_text(encoding="utf-8", errors="replace"))
     except OSError:
-        return {"name": p.name, "text": None, "why": "unreadable"}
+        return dict(d, text=None, why="unreadable")
 
 
 def phase_file(n, cwd, state=None):
@@ -976,7 +1018,7 @@ def move_to(state, n):
     """Set the phase and keep the timeline honest: phases left without an approved gate are
     'skipped'; going back (a loop-back) forgets everything from the target phase on."""
     if state["phase"] is None and n is not None:
-        state.update(timeline={}, feature_start=time.time())   # entering a feature from nothing
+        state.update(timeline={}, feature_start=time.time(), pins={}, rules=None)   # a feature from nothing
     old, tl = state["phase"], state.setdefault("timeline", {})
     if old is not None and n is not None:
         if n > old:
@@ -987,11 +1029,16 @@ def move_to(state, n):
         elif n < old:
             for k in [k for k in tl if int(k) >= n]:
                 del tl[k]
+            pins = state.get("pins") or {}
+            for kind, upto in (("spec", 3), ("plan", 4)):   # going back to (or before) the phase that wrote it
+                if n <= upto:
+                    pins.pop(kind, None)
     state["phase"] = n
 
 
 def new_feature(state):
-    state.update(phase=None, gate_pending=None, injected=None, timeline={}, feature_start=time.time())
+    state.update(phase=None, gate_pending=None, injected=None, timeline={}, feature_start=time.time(),
+                 pins={}, rules=None)
 
 
 def timeline_marks(state):
@@ -1038,6 +1085,10 @@ def enter_phase(state, n, env, cwd, lead):
 
 def engine_on(state):
     return state["enabled"] == "on" and state["level"] != "lite"
+
+
+def engine_on_saved(store, cwd):
+    return store.load(cwd)["enabled"] == "on"
 
 
 SCORE_KEYS = ("found", "total", "missing", "unverified", "reasons", "claimed", "listed", "file", "file_note",
@@ -1101,7 +1152,25 @@ def on_stop(payload, env, store, cwd):
     missing = r["missing"] + r["unverified"]
     entry = dict(prev, **r)
     tl[str(gate)] = entry
-    out = output("Stop", None, gate_line(gate, entry))
+    warn = []
+    snapshot_rules(state, env, cwd)
+    dropped = rules_dropped(state, gate, items)
+    if dropped:
+        warn.append(f"⚠ rules changed since this feature started: −{len(dropped)} item"
+                    f"{'s' if len(dropped) > 1 else ''} ({', '.join(clip(l) for l in dropped)})")
+    note = rules_note(gate, env, cwd)
+    if note:
+        warn.append("⚠ " + note)
+    if doc and doc.get("newer"):
+        warn.append(f"⚠ newer file {clip(doc['newer'])} not checked — the approved one is {clip(doc['name'])}")
+    spec = (state.get("pins") or {}).get("spec")
+    if spec and gate > 3:
+        now = file_sha(spec["path"])
+        if now is None:
+            warn.append(f"⚠ the approved spec {clip(Path(spec['path']).name)} is gone")
+        elif now != spec["sha"]:
+            warn.append(f"⚠ spec {clip(Path(spec['path']).name)} changed after its Phase 3 approval — re-read it")
+    out = output("Stop", None, gate_line(gate, entry) + "".join("\n" + w for w in warn))
     body = (payload.get("last_assistant_message") or "").rsplit("[[gate", 1)[0].rstrip()
     if (state["level"] == "strict" and missing and not entry.get("nudged")
             and not payload.get("stop_hook_active") and not body.endswith("?")):
@@ -1118,6 +1187,10 @@ def on_stop(payload, env, store, cwd):
 
 def approve(state, env, cwd):
     gate = state["gate_pending"]
+    doc = phase_doc(gate, cwd, state)
+    if doc:   # the approved spec/plan: later gates check this file, and a changed spec is flagged
+        state.setdefault("pins", {})[PHASE_FILES[gate]] = {"path": doc["path"], "sha": file_sha(doc["path"]),
+                                                           "phase": gate}
     tl = state.setdefault("timeline", {})
     tl[str(gate)] = dict(tl.get(str(gate), {}), status="done")
     for k, e in tl.items():
@@ -1235,7 +1308,43 @@ SKILL_SHOW = {
 }
 
 
+STATE_WRITERS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
+
+
+def touches_state(payload, env):
+    """True when a tool call names the plugin's own data folder (phase state, approvals, config).
+    Best effort for shell commands: it looks for the folder's path in the command text."""
+    d = data_dir(env)
+    names = {str(d), str(d.resolve())}
+    home = os.path.expanduser("~")
+    names |= {n.replace(home, "~", 1) for n in list(names) if n.startswith(home)}
+    ti = payload.get("tool_input") or {}
+    if payload.get("tool_name") in STATE_WRITERS:
+        target = ti.get("file_path") or ti.get("notebook_path") or ""
+        try:
+            target = str(Path(os.path.expanduser(target)).resolve())
+        except (OSError, RuntimeError):
+            pass
+        return any(target == n or target.startswith(n.rstrip("/") + "/") for n in names)
+    command = ti.get("command") or ""
+    return any(n and n in command for n in names)
+
+
+def state_guard(payload, env, store, cwd):
+    if not touches_state(payload, env):
+        return None
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask",
+                                   "permissionDecisionReason":
+                                       "Workflow guard: this changes the wf plugin's own state (phases and gate "
+                                       f"approvals in {data_dir(env)}). Only the user's /wf commands should "
+                                       "change it — allow only if you asked for this."}}
+
+
 def on_pre_tool(payload, env, store, cwd):
+    if engine_on_saved(store, cwd):
+        guarded = state_guard(payload, env, store, cwd)
+        if guarded:
+            return guarded
     if payload.get("tool_name") == "Bash":
         return on_bash(payload, env, store, cwd)
     if payload.get("tool_name") == "Skill":
@@ -1397,6 +1506,8 @@ def install_statusline(env):
 def on_prompt(payload, env, store, cwd):
     out = _on_prompt(payload, env, store, cwd)
     state = store.load(cwd)
+    if engine_on(state) and snapshot_rules(state, env, cwd):
+        store.save(cwd, state)
     note = state.pop("notice", None)
     if note:   # tell Claude what the Stop hook refused last turn (a Stop line reaches only the user)
         store.save(cwd, state)
