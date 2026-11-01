@@ -3,7 +3,8 @@
 A single, battle-tested process file for using an AI coding agent (Claude Code, Cursor, etc.) on real
 features without shipping self-inflicted outages or security holes.
 
-**Version:** v2.1.2 — the status line passes an existing status line (e.g. ponytail) through untouched, colours included, and the WF badge is in plain words, light turquoise and spaced apart. Previous release: [v2.0.1](https://github.com/larya-dot-eu/claude-workflows/releases/tag/v2.0.1) — see [Releases](https://github.com/larya-dot-eu/claude-workflows/releases) for changelog.
+**Version:** v2.1.2 — the status line passes an existing status line (e.g. ponytail) through untouched, colours included, and the WF badge is in plain words, light turquoise and spaced apart. See
+[Releases](https://github.com/larya-dot-eu/claude-workflows/releases) for changelog.
 
 **→ [`Claude-Workflows-Best-Practices.md`](./Claude-Workflows-Best-Practices.md)**
 
