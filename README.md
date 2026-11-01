@@ -218,7 +218,9 @@ WF ▸ ⚠ writing-plans — spec (Phase 3) is not approved yet
 - **Checklist %** — every gate has a checklist taken from the full doc. Claude lists each item on its own
   line (`- expected scale: §4 of the spec` or `- expected scale: N/A — pure function`). Only real answers
   count: *missing*, *TBD*, *left out*, *partially* don't. For the spec (P3) and plan (P4, P6) the hook also
-  checks the file: an item Claude calls covered that isn't in the file shows as *not in file*. It measures
+  checks the file: an item Claude calls covered that isn't in the file shows as *not in file*. The file
+  check passes on the item's English keywords *or* when the line cites a section the file really has
+  (`§10` → `## 10. <any title>`, or the heading's title), whatever the spec's language. It measures
   **coverage, not quality** — reading the gate is still your job.
 - **Timeline** — `/wf status` shows `P0 ✓ · P1 ✓ · P2 ⚠ skipped · P3 70% (gate)`. A phase left without an
   approved gate (Claude jumping ahead, a skill starting early) is marked *skipped*, so you can see whether

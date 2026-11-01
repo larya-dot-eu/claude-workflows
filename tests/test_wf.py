@@ -790,6 +790,27 @@ class TestChecklist(EngineCase):
         self.assertEqual(r["unverified"], ["access-control matrix"])
         self.assertEqual(r["found"], r["total"] - 1)
 
+    # Headings are placeholders with none of the English keywords, so only the citation can verify.
+    NUMBERED_SPEC = "# Title\n\n" + "".join(f"## {i}. Lorem {i}\n\nipsum\n\n" for i in range(1, 19))
+    CITING_GATE = "\n".join(f"- {label}: spec §{i}" for i, (label, _) in enumerate(wf.CHECKS[3], 1)) + "\n\n[[gate P3]]"
+
+    def test_spec_without_keywords_verifies_by_cited_section(self):
+        r = wf.score(3, self.CITING_GATE, self.NUMBERED_SPEC)
+        self.assertEqual((r["unverified"], r["found"]), ([], r["total"]))
+
+    def test_citing_a_section_the_file_lacks_stays_unverified(self):
+        label = wf.CHECKS[3][0][0]
+        r = wf.score(3, self.CITING_GATE.replace(f"{label}: spec §1\n", f"{label}: spec §99\n"), self.NUMBERED_SPEC)
+        self.assertEqual(r["unverified"], [label])
+
+    def test_spec_without_keywords_verifies_by_heading_title(self):
+        spec = "## Lorem ipsum\ndolor\n\n## Dolor sit\namet\n"
+        items = [("interfaces", True), ("edge cases", True)]
+        msg = "- interfaces: \"Lorem ipsum\"\n- edge cases: Dolor sit\n[[gate P3]]"
+        self.assertEqual(wf.score(3, msg, spec, items)["unverified"], [])
+        r = wf.score(3, msg.replace("Dolor sit", "Consectetur"), spec, items)
+        self.assertEqual(r["unverified"], ["edge cases"])
+
     def test_gate_line_shows_score_missing_and_unverified(self):
         self.e.prompt("/wf 3")
         out = self.stop(checklist(3, skip=("expected scale",)))

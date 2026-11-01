@@ -666,6 +666,29 @@ FILE_PATTERNS = {
 }
 
 
+HEADING_RE = re.compile(r"^ {0,3}#{2,6}\s+(.+?)\s*#*\s*$", re.M)   # sections; the # title is skipped
+HEADING_NUM = re.compile(r"^(?:§\s*)?(\d+(?:\.\d+)*)\.?(?=[\s.):]|$)")
+CITED_NUM = re.compile(r"§\s*(\d+(?:\.\d+)*)")
+
+
+def cites_heading(value, file_text):
+    """True when the gate line points at a heading that exists in the file — by number (`§10`
+    matches `## 10. <any title>`) or by quoting the heading's title. Uses only the file's own
+    headings, so it does not depend on the spec's language or wording."""
+    heads = HEADING_RE.findall(file_text or "")
+    if not heads or not value:
+        return False
+    nums = {m.group(1).rstrip(".") for m in map(HEADING_NUM.match, heads) if m}
+    if any(c.rstrip(".") in nums for c in CITED_NUM.findall(value)):
+        return True
+    v = value.casefold()
+    for h in heads:
+        title = HEADING_NUM.sub("", h).strip(" .):—–-").casefold()
+        if len(title) >= 4 and re.search(r"(?<!\w)" + re.escape(title) + r"(?!\w)", v):
+            return True
+    return False
+
+
 def checks_from_doc(doc_text, n):
     """[(label, checked_in_file)] from phase n's 'Gate checklist' line in the doc ([] if it has none)."""
     m = GATE_LINE.search(phase_section(doc_text or "", n))
@@ -747,7 +770,7 @@ def score(n, message, file_text=None, items=None):
     """Score phase n's gate. An item counts only when Claude's gate message has a line
     '- <label>: <where it is covered>' or '- <label>: N/A — why'. Negative answers (missing, TBD,
     left out, …) don't count, and where a spec/plan file exists, a covered item whose topic isn't
-    in that file is 'unverified' and doesn't count either."""
+    in that file (no keyword hit, and the line cites no heading the file has) is 'unverified'."""
     items = CHECKS.get(n, []) if items is None else items
     lines = checklist_lines(message)
     found, missing, unverified, listed = 0, [], [], 0
@@ -758,7 +781,8 @@ def score(n, message, file_text=None, items=None):
         rx = FILE_PATTERNS.get(label) if is_file else None
         if not value or NEGATIVE.match(value):
             missing.append(label)
-        elif rx and file_text is not None and not NA.match(value) and not re.search(rx, file_text, re.I | re.M):
+        elif (rx and file_text is not None and not NA.match(value)
+              and not re.search(rx, file_text, re.I | re.M) and not cites_heading(value, file_text)):
             unverified.append(label)
         else:
             found += 1
@@ -787,7 +811,7 @@ def checklist_instruction(n, items=None):
     if not labels:
         return ""
     return (f"At the Phase {n} gate, just before `[[gate P{n}]]`, list one line per checklist item, using these "
-            f"exact labels: " + "; ".join(labels) + ". Format: `- <label>: <where it is covered>` or "
+            f"exact labels: " + "; ".join(labels) + ". Format: `- <label>: <where it is covered, e.g. spec §4>` or "
             "`- <label>: N/A — <why>`. Never list an item you did not do as covered.")
 
 
