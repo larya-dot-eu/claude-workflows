@@ -3,7 +3,7 @@
 A single, battle-tested process file for using an AI coding agent (Claude Code, Cursor, etc.) on real
 features without shipping self-inflicted outages or security holes.
 
-**Version:** v2.1.1 — fixes from the v2.1.0 review: `n/a` items are listed on the gate line instead of counted as quoted, a quoted passage is never mistaken for `n/a`/`missing`, and the state guard and read-only commands are tighter. Previous: [v2.1.0](https://github.com/larya-dot-eu/claude-workflows/releases/tag/v2.1.0) — see [Releases](https://github.com/larya-dot-eu/claude-workflows/releases) for changelog.
+**Version:** v2.1.1 — fixes from the v2.1.0 review: `n/a` items are listed on the gate line instead of counted as quoted, a quoted passage is never mistaken for `n/a`/`missing`, and the state guard and read-only commands are tighter. Previous release: [v2.0.1](https://github.com/larya-dot-eu/claude-workflows/releases/tag/v2.0.1) — see [Releases](https://github.com/larya-dot-eu/claude-workflows/releases) for changelog.
 
 **→ [`Claude-Workflows-Best-Practices.md`](./Claude-Workflows-Best-Practices.md)**
 
