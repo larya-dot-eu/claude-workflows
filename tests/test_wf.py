@@ -1,11 +1,14 @@
 """Tests for scripts/wf.py — run with: python3 -m unittest discover -s tests"""
+import hashlib
 import json
 import os
+import random
 import re
 import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import unittest
 from pathlib import Path
 
@@ -21,6 +24,18 @@ def git_repo(path, branch="feature-x"):
     if branch != "main":
         subprocess.run(["git", "-C", str(path), "checkout", "-q", "-b", branch], check=True)
     return path
+
+
+# Letters from several scripts (Latin with diacritics, Greek, Cyrillic, Hiragana, Arabic), taken
+# by code point so the tests hold no words of any language: the plugin must not depend on words.
+SCRIPT_LETTERS = "".join(chr(c) for r in ((0x61, 0x7A), (0xE0, 0xFF), (0x100, 0x17F), (0x3B1, 0x3C9),
+                                          (0x430, 0x44F), (0x3042, 0x3093), (0x627, 0x64A)) for c in range(r[0], r[1] + 1))
+
+
+def gibberish(seed, n=6, letters=SCRIPT_LETTERS):
+    """n made-up words from mixed scripts (deterministic per seed)."""
+    rng = random.Random(seed)
+    return " ".join("".join(rng.choice(letters) for _ in range(rng.randint(3, 8))) for _ in range(n))
 
 
 class Env:
@@ -189,7 +204,8 @@ class TestStateAndCommands(unittest.TestCase):
         self.e.prompt("/wf 4")
         out = self.e.run("SessionStart", source="compact")
         self.assertIn("Phases — do → exit gate", ctx(out))
-        self.assertRegex(ctx(out), r"## Phase 4|Current phase: 4 .*lines \d+–\d+")
+        self.assertRegex(ctx(out), r"## Phase 4|Current phase: 4 .*come with the user's next message")
+        self.assertIn("## Phase 4", ctx(out) + ctx(self.e.prompt("go on")))
 
     def test_project_copy_of_doc_wins(self):
         (self.e.repo / "Claude-Workflows-Best-Practices.md").write_text(
@@ -260,6 +276,85 @@ class TestCli(unittest.TestCase):
         self.assertEqual(p.stdout, "")
 
 
+class TestTerminalSafety(unittest.TestCase):
+    """Everything the user sees is safe to print: no escape sequences, no invisible characters,
+    bounded length, readable on terminals without UTF-8, and errors never silent."""
+
+    HOSTILE = ["\x1b]0;pwned\x07", "\x1b[2J\x1b[H", "\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\",
+               "\u202eevil\u202c", "zero\u200bwidth", "\x9b31m", "a\rb", "\x00\x07\x7f"]
+
+    def test_safe_strips_control_and_invisible_characters(self):
+        for h in self.HOSTILE:
+            out = wf.safe("x " + h + " y")
+            self.assertFalse(any(unicodedata.category(c) in ("Cc", "Cf") for c in out), repr(out))
+
+    def test_lines_are_bounded(self):
+        self.assertLessEqual(len(wf.safe("a" * 5000)), wf.LINE_MAX)
+        self.assertLessEqual(len(wf.clip("b" * 5000)), wf.ITEM_MAX)
+        self.assertEqual(wf.clip("one\ntwo\x1b[2J"), "one two[2J")
+
+    def test_hostile_labels_from_a_project_doc_are_neutralised(self):
+        e = Env()
+        try:
+            labels = ["evil\x1b]0;pwned\x07", "x\u202egnp.exe", "L" * 5000]
+            (e.repo / "Claude-Workflows-Best-Practices.md").write_text(
+                "## Phase 2 — Explore\nrules\n\n**Gate checklist:** " + " · ".join(labels) + "\n\n---\n")
+            e.prompt("/wf on")
+            e.prompt("/wf 2")
+            line = shown(e.run("Stop", last_assistant_message="x\n[[gate P2]]"))
+            self.assertNotIn("\x1b", line)
+            self.assertNotIn("\u202e", line)
+            self.assertLess(len(line), wf.LINE_MAX + 10)
+        finally:
+            e.close()
+
+    def test_ascii_terminal_gets_ascii(self):
+        for env in ({"WF_ASCII": "1"}, {"LANG": "de_DE.ISO-8859-1"}, {"LC_ALL": "ro_RO"}):
+            out = wf.for_terminal("WF ▸ Gate P3 · ✓✓⚠ · " + gibberish(1, 2) + " → 5 — ok", env)
+            out.encode("ascii")
+            self.assertIn("WF > Gate P3 | ++! |", out)
+        for env in ({"LANG": "de_DE.UTF-8"}, {"LC_ALL": "C.utf8"}, {}):
+            self.assertIn("▸", wf.for_terminal("WF ▸", env))
+
+    def run_cli(self, event, stdin_bytes, extra_env):
+        return subprocess.run([sys.executable, str(ROOT / "scripts" / "wf.py"), event], input=stdin_bytes,
+                              capture_output=True, env=dict(os.environ, **extra_env))
+
+    def test_utf8_input_under_a_c_or_latin1_locale(self):
+        e = Env()
+        try:
+            env = dict(e.env, LC_ALL="C", LANG="C", PYTHONUTF8="0", PYTHONCOERCECLOCALE="0",
+                       PYTHONIOENCODING="latin-1")
+            for event, payload in (("UserPromptSubmit", {"prompt": "/wf on", "cwd": str(e.repo)}),
+                                   ("UserPromptSubmit", {"prompt": "/wf 3", "cwd": str(e.repo)}),
+                                   ("Stop", {"last_assistant_message": gibberish(2) + "\n[[gate P3]]",
+                                             "cwd": str(e.repo)})):
+                p = self.run_cli(event, json.dumps(payload, ensure_ascii=False).encode("utf-8"), env)
+                self.assertEqual(p.returncode, 0, p.stderr)
+                self.assertTrue(json.loads(p.stdout.decode("utf-8")), event)
+            p = self.run_cli("statusline", json.dumps({"cwd": str(e.repo)}).encode(), env)
+            self.assertTrue(p.stdout.decode("utf-8").startswith("[WF P3"), p.stdout)
+        finally:
+            e.close()
+
+    def test_internal_error_is_shown_once_and_logged(self):
+        e = Env()
+        try:
+            (e.data / "state").mkdir(parents=True)
+            e.prompt("/wf on")
+            p = self.run_cli("UserPromptSubmit", json.dumps({"prompt": 42, "cwd": str(e.repo)}).encode(), e.env)
+            self.assertEqual(p.returncode, 0)
+            msg = json.loads(p.stdout)["systemMessage"]
+            self.assertIn("internal error (UserPromptSubmit)", msg)
+            self.assertIn("Traceback", (e.data / "wf-error.log").read_text())
+        finally:
+            e.close()
+
+    def test_garbage_input_stays_silent(self):
+        p = self.run_cli("Stop", b"\xff\xfe not json", {"CLAUDE_PLUGIN_DATA": tempfile.mkdtemp()})
+        self.assertEqual((p.returncode, p.stdout), (0, b""))
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -277,20 +372,6 @@ class TestGateMarker(unittest.TestCase):
         self.assertIsNone(wf.gate_from_message("[[gate P11]]"))
         self.assertIsNone(wf.gate_from_message(""))
         self.assertIsNone(wf.gate_from_message(None))
-
-
-class TestApproval(unittest.TestCase):
-    def test_approvals(self):
-        for t in ["approved", "Approved.", "looks good", "LGTM!", "proceed", "ok, proceed",
-                  "yes", "go ahead", "approve", "sounds good, continue", "ok"]:
-            self.assertTrue(wf.is_approval(t), t)
-
-    def test_not_approvals(self):
-        for t in ["looks good but change the title", "approved except step 3", "no",
-                  "why did you pick sqlite?", "wait", "proceed, but first fix the typo",
-                  "ok go run the tests and tell me what fails, then we redo the whole plan from scratch please",
-                  "can you explain step 2", "/wf on", "don't proceed", "not yet"]:
-            self.assertFalse(wf.is_approval(t), t)
 
 
 class EngineCase(unittest.TestCase):
@@ -313,7 +394,7 @@ class TestPhaseEngine(EngineCase):
         self.e.prompt("/wf 3")
         self.assertNotIn("decision", self.stop("Here is the spec.\n[[gate P3]]") or {})
         self.assertEqual(self.e.state()["gate_pending"], 3)
-        out = self.e.prompt("approved")
+        out = self.e.prompt("/wf ok")
         s = self.e.state()
         self.assertEqual((s["phase"], s["gate_pending"]), (4, None))
         self.assertIn("## Phase 4", ctx(out))
@@ -321,7 +402,7 @@ class TestPhaseEngine(EngineCase):
 
     def test_approval_without_pending_gate_does_nothing(self):
         self.e.prompt("/wf 3")
-        self.assertIn("no gate", ctx(self.e.prompt("approved")))
+        self.assertIn("no gate", ctx(self.e.prompt("/wf ok")))
         self.assertEqual(self.e.state()["phase"], 3)
 
     def test_turn_without_marker_clears_pending_gate(self):
@@ -330,25 +411,44 @@ class TestPhaseEngine(EngineCase):
         self.e.prompt("why sqlite?")
         self.stop("Because ... (answer to side question)")
         self.assertIsNone(self.e.state()["gate_pending"])
-        self.assertIn("no gate", ctx(self.e.prompt("ok")))
+        self.assertIn("no gate", shown(self.e.prompt("/wf ok")))
         self.assertEqual(self.e.state()["phase"], 3)
 
     def test_non_approval_keeps_phase(self):
         self.e.prompt("/wf 3")
         self.stop("spec\n[[gate P3]]")
-        self.assertIsNone(self.e.prompt("looks good but rename the table"))
+        out = self.e.prompt("looks good but rename the table")
+        self.assertEqual(self.e.state()["phase"], 3)
+        self.assertIn("feedback", shown(out))
+
+    def test_marker_never_moves_the_phase(self):
+        self.e.prompt("/wf 3")
+        for n in (4, 5, 7, 10):
+            out = self.stop(f"x\n[[gate P{n}]]")
+            s = self.e.state()
+            self.assertEqual((s["phase"], s["gate_pending"]), (3, None), n)
+            self.assertIn(f"Gate P{n} marker at Phase 3 not applied", shown(out))
+        self.e.prompt("/wf ok")
         self.assertEqual(self.e.state()["phase"], 3)
 
-    def test_marker_moves_phase_to_marker_phase(self):
-        self.e.prompt("/wf 0")
-        self.stop("Context summary...\n[[gate P1]]")
-        self.e.prompt("approved")
-        self.assertEqual(self.e.state()["phase"], 2)
+    def test_refused_marker_is_explained_to_claude_on_the_next_prompt(self):
+        self.e.prompt("/wf 3")
+        self.stop("x\n[[gate P7]]")
+        out = self.e.prompt("go on")
+        self.assertIn("did not apply it", ctx(out))
+        self.assertNotIn("did not apply it", ctx(self.e.prompt("and now?")))   # told once
+
+    def test_marker_without_a_phase_is_refused(self):
+        self.e.prompt("/wf new")
+        self.e.prompt("/wf off")
+        self.e.prompt("/wf on")
+        self.stop("x\n[[gate P3]]")
+        self.assertIsNone(self.e.state()["phase"])
 
     def test_final_gate_completes_feature(self):
         self.e.prompt("/wf 10")
         self.stop("Deployed, healthy.\n[[gate P10]]")
-        out = self.e.prompt("approved")
+        out = self.e.prompt("/wf ok")
         s = self.e.state()
         self.assertIsNone(s["phase"])
         self.assertEqual(s["enabled"], "on")
@@ -367,7 +467,8 @@ class TestPhaseEngine(EngineCase):
         self.e.prompt("/wf 3")
         self.stop("x\n[[gate P3]]")
         self.e.prompt("/wf pause")
-        self.assertIsNone(self.e.prompt("approved"))
+        self.assertIn("paused", shown(self.e.prompt("/wf ok")))
+        self.assertEqual(self.e.state()["phase"], 3)
 
 
 class TestSkillMapping(EngineCase):
@@ -393,12 +494,21 @@ class TestSkillMapping(EngineCase):
         self.assertIn("not approved", ctx(out))
         self.assertEqual(self.e.state()["phase"], 2)
 
-    def test_writing_plans_after_spec_enters_phase_4(self):
+    def test_writing_plans_after_spec_approval(self):
         self.e.prompt("/wf 3")
+        self.stop("spec\n[[gate P3]]")
+        self.e.prompt("/wf ok")
         out = self.skill("superpowers:writing-plans")
         self.assertEqual(self.e.state()["phase"], 4)
-        self.assertIn("## Phase 4", ctx(out))
         self.assertIn("execution method", ctx(out))
+
+    def test_writing_plans_never_skips_the_spec_gate(self):
+        self.e.prompt("/wf 3")
+        self.stop("spec\n[[gate P3]]")
+        out = self.skill("superpowers:writing-plans")
+        self.assertEqual(self.e.state()["phase"], 3)
+        self.assertIn("not approved", ctx(out))
+        self.assertIn("/wf ok first", shown(out))
 
     def test_executor_before_phase_6_warns(self):
         self.e.prompt("/wf 4")
@@ -407,11 +517,19 @@ class TestSkillMapping(EngineCase):
             self.assertIn("Phase 5", ctx(out))
             self.assertEqual(self.e.state()["phase"], 4)
 
-    def test_executor_after_phase_6_enters_7(self):
+    def test_executor_after_phase_6_approval(self):
         self.e.prompt("/wf 6")
+        self.stop("tdd plan\n[[gate P6]]")
+        self.e.prompt("/wf ok")
         out = self.skill("superpowers:subagent-driven-development")
         self.assertEqual(self.e.state()["phase"], 7)
         self.assertIn("Execution record", ctx(out))
+
+    def test_executor_never_skips_the_phase_6_gate(self):
+        self.e.prompt("/wf 6")
+        out = self.skill("superpowers:executing-plans")
+        self.assertEqual(self.e.state()["phase"], 6)
+        self.assertIn("not approved", ctx(out))
 
     def test_finishing_before_phase_10_holds(self):
         self.e.prompt("/wf 7")
@@ -583,19 +701,13 @@ class TestReviewFixes(unittest.TestCase):
     def test_approval_without_gate_gets_a_hint_not_silence(self):
         self.e.prompt("/wf on")
         self.e.prompt("/wf 3")
-        out = self.e.prompt("approved")
+        out = self.e.prompt("/wf ok")
         self.assertIn("no gate", ctx(out).lower())
         self.assertEqual(self.e.state()["phase"], 3)
 
     def test_skin_tells_claude_to_repeat_marker_while_waiting(self):
         out = self.e.prompt("/wf on")
         self.assertIn("still waiting", ctx(out))
-
-    def test_approval_word_edge_cases(self):
-        for t in ["continue", "great", "good"]:
-            self.assertFalse(wf.is_approval(t), t)
-        self.assertTrue(wf.is_approval("yes, no changes needed"))
-        self.assertTrue(wf.is_approval("looks good, no issues"))
 
     def test_unicode_digit_is_not_a_phase(self):
         self.assertEqual(wf.parse_command("/wf ²")[0], "²")
@@ -617,7 +729,7 @@ class TestReviewFixes(unittest.TestCase):
         self.e.prompt("/wf on")
         self.e.prompt("/wf 10")
         self.e.run("Stop", last_assistant_message="done\n[[gate P10]]")
-        self.e.prompt("approved")
+        self.e.prompt("/wf ok")
         self.e.prompt("/wf off")
         self.e.prompt("/wf on")
         self.assertIsNone(self.e.state()["phase"])
@@ -655,8 +767,8 @@ class TestVisibleLines(EngineCase):
         self.e.prompt("/wf 3")
         out = self.stop("spec\n[[gate P3]]")
         self.assertIn("Gate P3", shown(out))
-        out = self.e.prompt("approved")
-        self.assertIn("Gate P3 approved → Phase 4", shown(out))
+        out = self.e.prompt("/wf ok")
+        self.assertIn("Gate P3 approved via /wf ok → Phase 4", shown(out))
 
     def test_skill_events_are_shown(self):
         out = self.skill("superpowers:brainstorming")
@@ -684,7 +796,7 @@ class TestVisibleLines(EngineCase):
 class TestTimeline(EngineCase):
     def walk(self, n):
         self.stop(f"x\n[[gate P{n}]]")
-        self.e.prompt("approved")
+        self.e.prompt("/wf ok")
 
     def marks(self):
         return wf.timeline_marks(self.e.state())
@@ -696,11 +808,11 @@ class TestTimeline(EngineCase):
         self.assertEqual(self.marks(), "✓✓")
         self.assertEqual(self.e.state()["phase"], 2)
 
-    def test_jumping_ahead_marks_skipped(self):
+    def test_jumping_ahead_is_refused(self):
         self.e.prompt("/wf new")
         self.walk(0)
-        self.stop("design doc\n[[gate P3]]")      # Claude jumped from Phase 1 to the P3 gate
-        self.assertEqual(self.marks(), "✓⚠⚠")
+        self.stop("design doc\n[[gate P3]]")      # Claude tried to jump from Phase 1 to the P3 gate
+        self.assertEqual((self.e.state()["phase"], self.marks()), (1, "✓"))
 
     def test_skill_jump_marks_skipped(self):
         self.e.prompt("/wf 6")                     # from nothing: no history to mark
@@ -725,7 +837,7 @@ class TestTimeline(EngineCase):
     def test_status_shows_timeline(self):
         self.e.prompt("/wf new")
         self.walk(0)
-        self.stop("x\n[[gate P2]]")
+        self.e.prompt("/wf 2")                     # the user jumps on purpose: P1 is marked skipped
         out = self.e.prompt("/wf status")
         self.assertRegex(shown(out), r"P0 ✓( \d+%)? · P1 ⚠ skipped · P2")
 
@@ -756,6 +868,29 @@ def checklist(n, skip=(), bad=None):
     return "Gate summary\n" + "\n".join(lines) + f"\n\n[[gate P{n}]]"
 
 
+def file_labels(n):
+    return [l for l, f in wf.CHECKS[n] if f]
+
+
+def passage(i):
+    return f"Passage {i}: lorem ipsum dolor sit amet number {i}."
+
+
+QUOTE_SPEC = "Spec\n\n" + "\n\n".join(passage(i) for i in range(20)) + "\n"
+
+
+def quoted(n, passages=None):
+    """A gate message for phase n whose (file) items each quote their own passage (of QUOTE_SPEC)."""
+    lines, i = [], 0
+    for label, is_file in wf.CHECKS[n]:
+        if is_file:
+            lines.append(f'- {label}: "{(passages or [passage(k) for k in range(20)])[i]}" (section {i})')
+            i += 1
+        else:
+            lines.append(f"- {label}: covered in the gate message")
+    return "Gate summary\n" + "\n".join(lines) + f"\n\n[[gate P{n}]]"
+
+
 class TestChecklist(EngineCase):
     def test_every_phase_has_a_checklist_with_unique_labels(self):
         for n in range(0, 11):
@@ -772,23 +907,93 @@ class TestChecklist(EngineCase):
                "reuse, and presentation vs logic.\n[[gate P3]]")
         self.assertEqual(wf.score(3, msg)["found"], 0)
 
-    def test_negative_answers_do_not_count(self):
-        for val in ("missing", "TODO", "TBD", "not covered yet", "left out", "?", "skipped",
-                    "**not covered** (left out)", "**partially done**, only opened calc.py", "partial"):
+    def test_only_the_missing_token_or_nothing_counts_as_missing(self):
+        for val in ("missing", "Missing — later", "**missing**", ""):
             r = wf.score(1, checklist(1, bad=("constraints", val)))
             self.assertIn("constraints", r["missing"], val)
 
-    def test_na_with_reason_counts(self):
-        r = wf.score(1, checklist(1, bad=("constraints", "N/A — greenfield, none")))
-        self.assertEqual(r["missing"], [])
+    def test_words_are_never_interpreted(self):
+        # The hook reads no language: a free-text value is a claim, reported as "claimed, not checked".
+        for val in ["TBD", "to do"] + [gibberish(i, 1) for i in range(5)]:
+            r = wf.score(1, checklist(1, bad=("constraints", val)))
+            self.assertIn("constraints", r["claimed"], val)
 
-    def test_claim_not_found_in_spec_file_is_unverified(self):
+    def test_na_with_reason_counts(self):
+        for val in ("n/a — greenfield, none", "N/A — " + gibberish(3, 2), "NA: " + gibberish(4, 1)):
+            r = wf.score(1, checklist(1, bad=("constraints", val)))
+            self.assertEqual(r["missing"], [], val)
+
+    def test_quote_not_found_in_spec_file_is_unverified(self):
         d = self.e.repo / "docs/superpowers/specs"
         d.mkdir(parents=True)
-        (d / "s-design.md").write_text(FULL_SPEC.replace("Access-control\nmatrix: no access boundaries.", ""))
-        r = wf.score(3, checklist(3), wf.phase_file(3, str(self.e.repo)))
-        self.assertEqual(r["unverified"], ["access-control matrix"])
+        label = file_labels(3)[0]
+        (d / "s-design.md").write_text(QUOTE_SPEC.replace(passage(0), "other text entirely"))
+        r = wf.score(3, quoted(3), wf.phase_file(3, str(self.e.repo)))
+        self.assertEqual(r["unverified"], [label])
+        self.assertEqual(r["reasons"][label], "quote not in file")
         self.assertEqual(r["found"], r["total"] - 1)
+
+    def test_all_quotes_found_scores_100(self):
+        r = wf.score(3, quoted(3), QUOTE_SPEC)
+        self.assertEqual((r["found"], r["unverified"]), (r["total"], []))
+
+    def test_quote_check_ignores_language_and_structure(self):
+        # Prose in any script, no headings, no numbering, any symbols: only the quoted text matters.
+        rng = random.Random(7)
+        alphabet = SCRIPT_LETTERS
+        for _ in range(20):
+            words = ["".join(rng.choice(alphabet) for _ in range(rng.randint(2, 9))) for _ in range(400)]
+            text = " ".join(words)
+            items = [("a", True), ("b", True)]
+            qa, qb = " ".join(words[10:16]), " ".join(words[200:206])
+            msg = f'- a: "{qa}"\n- b: «{qb}» (any note)\n[[gate P3]]'
+            self.assertEqual(wf.score(3, msg, text, items)["unverified"], [], text[:40])
+
+    def test_quote_survives_formatting_and_line_wraps(self):
+        spec = ("## 2.1 Lorem\n\n- **The report** is generated\n  only for the _selected_ period,\n"
+                "| col | the “quoted” value — here |\n")
+        items = [("a", True), ("b", True)]
+        msg = ('- a: "The report is generated only for the selected period"\n'
+               '- b: "the \\"quoted\\" value - here"\n[[gate P3]]')
+        msg = msg.replace('\\"quoted\\"', "“quoted”")
+        self.assertEqual(wf.score(3, msg, spec, items)["unverified"], [])
+
+    def test_paraphrase_short_and_reused_quotes_are_rejected(self):
+        spec = "The report is generated only for the selected period of time.\n"
+        items = [("a", True), ("b", True)]
+        cases = {
+            '- a: "A report gets generated for the chosen period"': "quote not in file",
+            '- a: "report"': "quote too short",
+            "- a: the report section": "no quote",
+        }
+        for line, why in cases.items():
+            r = wf.score(3, line + '\n- b: "generated only for the selected period"\n', spec, items)
+            self.assertEqual(r["reasons"].get("a"), why, line)
+        same = '- a: "generated only for the selected period"\n- b: "generated only for the selected period"'
+        r = wf.score(3, same, spec, items)
+        self.assertEqual(r["reasons"], {"b": "same quote as another item"})
+
+    def test_section_citation_alone_is_not_proof(self):
+        r = wf.score(3, "\n".join(f"- {l}: spec §1" for l, _ in wf.CHECKS[3]), QUOTE_SPEC)
+        self.assertEqual(sorted(r["unverified"]), sorted(file_labels(3)))
+
+    def test_gate_line_names_the_file_and_never_claims_content(self):
+        d = self.e.repo / "docs/superpowers/specs"
+        d.mkdir(parents=True)
+        self.e.prompt("/wf 3")
+        (d / "feature.txt").write_text(QUOTE_SPEC)          # any text file, any extension
+        (d / ".hidden.md").write_text("x")                  # hidden and binary files are skipped
+        (d / "diagram.png").write_bytes(b"\x89PNG\0\0")
+        line = shown(self.stop(quoted(3)))
+        self.assertIn(f"{len(file_labels(3))} quoted in feature.txt", line)
+        self.assertIn("content not judged", line)
+        self.assertNotIn("✓", line)
+
+    def test_no_spec_file_is_said_not_hidden(self):
+        self.e.prompt("/wf 3")
+        line = shown(self.stop(quoted(3)))
+        self.assertIn("no spec file", line)
+        self.assertIn("claimed, not checked", line)
 
     def test_gate_line_shows_score_missing_and_unverified(self):
         self.e.prompt("/wf 3")
@@ -810,7 +1015,7 @@ class TestChecklist(EngineCase):
         pct = wf.score_pct(self.e.state()["timeline"]["3"])
         self.assertEqual(pct, 80)
         self.assertRegex(wf.statusline({"cwd": str(self.e.repo)}, self.e.env), r"\[WF P3 80%")
-        self.e.prompt("approved")
+        self.e.prompt("/wf ok")
         self.assertIn("P3 ✓ 80%", shown(self.e.prompt("/wf status")))
 
 
@@ -826,7 +1031,7 @@ class TestStrictNudge(EngineCase):
         out = self.gate3()
         self.assertEqual(out.get("decision"), "block")
         self.assertIn("access-control matrix", out["reason"])
-        self.assertIn("N/A", out["reason"])
+        self.assertIn("n/a", out["reason"])
         self.assertIn("[[gate P3]]", out["reason"])
         self.assertIn("missing", shown(out))
         again = self.gate3()                       # Claude ends at the gate again, still incomplete
@@ -851,7 +1056,7 @@ class TestStrictNudge(EngineCase):
         self.e.prompt("/wf strict")
         self.e.prompt("/wf 3")
         self.gate3()
-        self.e.prompt("approved")
+        self.e.prompt("/wf ok")
         self.e.prompt("/wf 3")
         self.assertEqual(self.gate3().get("decision"), "block")
 
@@ -861,7 +1066,7 @@ class TestReview2Fixes(EngineCase):
         self.e.prompt("/wf strict")
         self.e.prompt("/wf 10")
         self.stop("deployed\n[[gate P10]]")
-        self.e.prompt("approved")
+        self.e.prompt("/wf ok")
         self.e.prompt("/wf 0")
         self.assertEqual(self.e.state()["timeline"], {})
 
@@ -986,7 +1191,7 @@ class TestEarlierGateIsARecap(EngineCase):
         self.e.prompt("/wf new")
         for n in range(0, 6):
             self.stop(f"x\n[[gate P{n}]]")
-            self.e.prompt("approved")
+            self.e.prompt("/wf ok")
         before = dict(self.e.state()["timeline"])
         out = self.stop("Recap of the plan.\n[[gate P4]]")
         s = self.e.state()
@@ -996,13 +1201,13 @@ class TestEarlierGateIsARecap(EngineCase):
         self.assertIn("/wf 4", shown(out))
 
     def test_skin_tells_claude_loop_backs_are_the_users_call(self):
-        self.assertIn("`/wf <n>`", ctx(self.e.prompt("/wf 5")))
+        self.assertIn("`/wf <n>`", ctx(self.e.run("UserPromptSubmit", prompt="/wf 5", session_id="new")))
 
     def test_loop_back_still_works_with_wf_n(self):
         self.e.prompt("/wf new")
         for n in range(0, 6):
             self.stop(f"x\n[[gate P{n}]]")
-            self.e.prompt("approved")
+            self.e.prompt("/wf ok")
         self.e.prompt("/wf 3")
         self.assertEqual(self.e.state()["phase"], 3)
         self.assertEqual(wf.timeline_marks(self.e.state()), "✓✓✓")
@@ -1060,20 +1265,50 @@ class TestFollowBranch(unittest.TestCase):
         self.assertEqual(self.e.state()["enabled"], "off")
 
 
-class TestStartPhase(EngineCase):
-    def test_start_phase_7_approves_the_p6_gate(self):
-        self.e.prompt("/wf 6")
-        self.stop("TDD plan\n[[gate P6]]")
-        out = self.e.prompt("start Phase 7")
-        self.assertEqual(self.e.state()["phase"], 7)
-        self.assertIn("Gate P6 approved → Phase 7", shown(out))
-
-    def test_start_phase_must_be_the_next_phase(self):
+class TestApprovalCommand(EngineCase):
+    def test_free_text_never_approves_in_any_language(self):
         self.e.prompt("/wf 3")
         self.stop("spec\n[[gate P3]]")
-        out = self.e.prompt("start phase 5")
+        for t in ["approved", "yes", "ok", "LGTM", "start Phase 4", "ok, but rename X first"] + \
+                 [gibberish(i, 2) for i in range(6)]:
+            out = self.e.prompt(t)
+            self.assertEqual(self.e.state()["phase"], 3, t)
+            self.assertIn("/wf ok", shown(out), t)
+            self.assertIn("not an approval", ctx(out), t)
+
+    def test_wf_ok_approves_the_waiting_gate(self):
+        self.e.prompt("/wf 6")
+        self.stop("TDD plan\n[[gate P6]]")
+        out = self.e.prompt("/wf ok")
+        self.assertEqual(self.e.state()["phase"], 7)
+        self.assertIn("Gate P6 approved via /wf ok → Phase 7", shown(out))
+
+    def test_wf_ok_n_must_name_the_waiting_gate(self):
+        self.e.prompt("/wf 3")
+        self.stop("spec\n[[gate P3]]")
+        for arg in ("4", "p5", "x", "²"):
+            out = self.e.prompt(f"/wf ok {arg}")
+            self.assertEqual(self.e.state()["phase"], 3, arg)
+            self.assertIn("gate waiting is Phase 3", shown(out), arg)
+        self.e.prompt("/wf ok P3")
+        self.assertEqual(self.e.state()["phase"], 4)
+
+    def test_wf_ok_without_a_waiting_gate_changes_nothing(self):
+        self.e.prompt("/wf 3")
+        out = self.e.prompt("/wf ok")
         self.assertEqual(self.e.state()["phase"], 3)
-        self.assertIn("Phase 4", ctx(out))
+        self.assertIn("nothing was approved", shown(out))
+
+    def test_wf_ok_when_skin_is_off_or_paused(self):
+        self.e.prompt("/wf 3")
+        self.stop("spec\n[[gate P3]]")
+        self.e.prompt("/wf pause")
+        self.e.prompt("/wf ok")
+        self.assertEqual(self.e.state()["phase"], 3)
+
+    def test_gate_line_says_how_to_approve(self):
+        self.e.prompt("/wf 2")
+        self.assertIn("/wf ok to approve", shown(self.stop(checklist(2))))
 
     def test_docs_say_p6_approval_is_the_go(self):
         doc = (ROOT / "Claude-Workflows-Best-Practices.md").read_text()
@@ -1130,12 +1365,6 @@ class TestChecklistFromDoc(unittest.TestCase):
             self.assertEqual([l for l, _ in items], [l for l, _ in wf.CHECKS[n]], n)
             self.assertGreaterEqual(len(items), 3, n)
 
-    def test_every_file_item_has_a_pattern(self):
-        for n, items in wf.CHECKS.items():
-            for label, is_file in items:
-                if is_file:
-                    self.assertIn(label, wf.FILE_PATTERNS, (n, label))
-
     def test_project_doc_labels_win(self):
         e = Env()
         try:
@@ -1147,15 +1376,16 @@ class TestChecklistFromDoc(unittest.TestCase):
         finally:
             e.close()
 
-    def test_superpowers_plan_format_only_flags_real_file_gaps(self):
-        r = wf.score(4, checklist(4), SP_PLAN)
-        self.assertEqual(r["unverified"], ["exit state per step"])   # the doc requires it; writing-plans doesn't add it
+    def test_plan_quotes_only_flag_real_file_gaps(self):
+        msg = quoted(4).replace(passage(2), "Each step ends in a working state.")
+        r = wf.score(4, msg, QUOTE_SPEC)
+        self.assertEqual(r["unverified"], [file_labels(4)[2]])
 
     def test_chat_items_are_never_checked_against_files(self):
-        r = wf.score(6, checklist(6), SP_PLAN)
+        r = wf.score(6, quoted(6), QUOTE_SPEC)
+        chat = [l for l, f in wf.CHECKS[6] if not f]
         self.assertEqual(r["unverified"], [])
-        r = wf.score(3, checklist(3), FULL_SPEC.replace("Checkpoint: no conflicts with existing code, no unverified assumptions.", ""))
-        self.assertEqual(r["unverified"], [])
+        self.assertEqual(sorted(r["claimed"]), sorted(chat))
 
 
 class TestFilesFromWorktreeAndCustomDirs(unittest.TestCase):
@@ -1203,14 +1433,14 @@ class TestCombinedFirstMessage(EngineCase):
     def test_p0_lines_in_p1_gate_count_for_p0(self):
         self.skill("superpowers:brainstorming")
         self.stop(self.first_message())
-        self.e.prompt("approved")
+        self.e.prompt("/wf ok")
         self.assertEqual(wf.timeline_marks(self.e.state()), "✓✓")
 
-    def test_without_p0_lines_p0_is_skipped(self):
+    def test_without_p0_lines_the_p1_marker_is_refused(self):
         self.skill("superpowers:brainstorming")
-        self.stop(self.first_message(with_p0=False))
-        self.e.prompt("approved")
-        self.assertEqual(wf.timeline_marks(self.e.state()), "⚠✓")
+        out = self.stop(self.first_message(with_p0=False))
+        self.assertEqual(self.e.state()["phase"], 0)
+        self.assertIn("Phase 0 checklist is incomplete", shown(out))
 
     def test_brainstorming_note_allows_one_combined_gate(self):
         out = self.skill("superpowers:brainstorming")
@@ -1226,7 +1456,7 @@ class TestSkillFile(unittest.TestCase):
 
 class TestExecutorReminderMatchesDocs(EngineCase):
     def test_lists_every_ledger_line_the_docs_require(self):
-        self.e.prompt("/wf 6")
+        self.e.prompt("/wf 7")
         text = ctx(self.skill("superpowers:executing-plans"))
         for item in ("Ruling", "parked", "minor (deferred)", "no reachable spec"):
             self.assertIn(item, text)
@@ -1246,7 +1476,7 @@ class TestHelp(unittest.TestCase):
     def test_help_shows_everyday_guide_in_terminal(self):
         out = self.e.prompt("/wf help")
         text = shown(out)
-        for cmd in ("/wf on", "/wf pause", "/wf status", "/wf off", "approved", "/wf help strict"):
+        for cmd in ("/wf on", "/wf pause", "/wf status", "/wf off", "/wf ok", "/wf help strict"):
             self.assertIn(cmd, text)
         self.assertNotIn(text.splitlines()[1], ctx(out))   # the guide is shown, not sent to Claude
 
@@ -1277,7 +1507,7 @@ class TestShortHint(unittest.TestCase):
     def test_hint_is_short(self):
         front = (ROOT / "skills/wf/SKILL.md").read_text().split("---")[1]
         hint = re.search(r'argument-hint:\s*"(.*)"', front).group(1)
-        self.assertEqual(hint, "[on | off | pause | status | help]")
+        self.assertEqual(hint, "[on | ok | off | pause | status | help]")
 
     def test_plugin_version_matches_readme(self):
         version = json.loads((ROOT / ".claude-plugin/plugin.json").read_text())["version"]
@@ -1427,3 +1657,220 @@ class TestStatuslineCoexistence(StatuslineCase):
         out = self.e.prompt("/wf statusline off")
         self.assertIn("printf OTHER", self.settings.read_text())
         self.assertIn("not installed", shown(out).lower())
+
+
+class TestProtectedChecks(EngineCase):
+    def spec_dir(self):
+        d = self.e.repo / "docs/superpowers/specs"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def approve_spec(self):
+        self.e.prompt("/wf 3")
+        (self.spec_dir() / "a-design.md").write_text(QUOTE_SPEC)
+        self.stop(quoted(3))
+        self.e.prompt("/wf ok")
+
+    def test_approved_spec_is_pinned(self):
+        self.approve_spec()
+        pin = self.e.state()["pins"]["spec"]
+        self.assertTrue(pin["path"].endswith("a-design.md"))
+        self.assertEqual(pin["sha"], hashlib.sha256(QUOTE_SPEC.encode()).hexdigest())
+
+    def test_spec_changed_after_approval_is_flagged(self):
+        self.approve_spec()
+        self.assertNotIn("changed after", shown(self.stop("plan\n[[gate P4]]")))
+        (self.spec_dir() / "a-design.md").write_text(QUOTE_SPEC + "\nOne more rule.")
+        self.assertIn("spec a-design.md changed after its Phase 3 approval", shown(self.stop("plan\n[[gate P4]]")))
+
+    def test_newer_file_does_not_replace_the_approved_one(self):
+        self.approve_spec()
+        self.e.prompt("/wf 4")
+        d = self.e.repo / "docs/superpowers/plans"
+        d.mkdir(parents=True)
+        (d / "plan.md").write_text(QUOTE_SPEC)
+        self.stop(quoted(4))
+        self.e.prompt("/wf ok")
+        self.e.prompt("/wf 6")
+        time.sleep(0.01)
+        (d / "zz-decoy.md").write_text("nothing here")
+        line = shown(self.stop(quoted(6)))
+        self.assertIn("quoted in plan.md", line)
+        self.assertIn("newer file zz-decoy.md not checked", line)
+
+    def test_loop_back_releases_the_pin(self):
+        self.approve_spec()
+        self.e.prompt("/wf 3")
+        self.assertNotIn("spec", self.e.state().get("pins") or {})
+
+    def test_rules_doc_dropping_items_mid_feature_is_flagged(self):
+        doc = self.e.repo / "Claude-Workflows-Best-Practices.md"
+        full = (ROOT / "Claude-Workflows-Best-Practices.md").read_text()
+        doc.write_text(full)
+        self.e.prompt("/wf new")
+        self.e.prompt("/wf 2")
+        doc.write_text(full.replace(" · prior-solution search", "").replace(" · what's different", ""))
+        line = shown(self.stop(checklist(2)))
+        self.assertIn("rules changed since this feature started: −2 items", line)
+
+    def test_project_doc_without_checklist_says_built_in_is_used(self):
+        (self.e.repo / "Claude-Workflows-Best-Practices.md").write_text("## Phase 2 — Erkunden\nRegeln\n")
+        self.e.prompt("/wf 2")
+        self.assertIn("using the plugin's built-in one", shown(self.stop(checklist(2))))
+
+    def test_writes_to_plugin_state_ask_the_user(self):
+        state_file = str(self.e.data / "state" / "x.json")
+        for tool, ti in (("Write", {"file_path": state_file}), ("Edit", {"file_path": state_file}),
+                         ("Bash", {"command": f"echo '{{}}' > {state_file}"})):
+            out = self.e.run("PreToolUse", tool_name=tool, tool_input=ti)
+            self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "ask", tool)
+        out = self.e.run("PreToolUse", tool_name="Write", tool_input={"file_path": str(self.e.repo / "a.py")})
+        self.assertIsNone(out)
+
+    def test_hooks_json_routes_file_writes_to_the_guard(self):
+        hooks = json.loads((ROOT / "hooks/hooks.json").read_text())["hooks"]["PreToolUse"]
+        self.assertTrue(any("Write" in h.get("matcher", "") and "Edit" in h["matcher"] for h in hooks))
+
+
+class TestWholeFeatureAnyLanguage(EngineCase):
+    """One feature from Phase 0 to Phase 10 with a spec and plan in mixed scripts, no headings or
+    numbering, approved only with /wf ok: every gate is 100%, nothing is flagged, nothing skipped."""
+
+    def mixed_passages(self, seed):
+        rng = random.Random(seed)
+        abc = SCRIPT_LETTERS
+        return [" ".join("".join(rng.choice(abc) for _ in range(rng.randint(3, 8))) for _ in range(6))
+                for _ in range(12)]
+
+    def test_full_walk(self):
+        spec_p, plan_p = self.mixed_passages(1), self.mixed_passages(2)
+        self.skill("superpowers:brainstorming")
+        first = checklist(0).rsplit("\n\n", 1)[0] + "\n" + checklist(1)
+        lines = [shown(self.stop(first))]
+        self.e.prompt("/wf ok")
+        for n in range(2, 11):
+            self.assertEqual(self.e.state()["phase"], n)
+            if n == 3:
+                d = self.e.repo / "docs/specs"
+                d.mkdir(parents=True)
+                (d / "feature").write_text("\n\n".join(spec_p) + "\n", encoding="utf-8")   # no extension
+                msg = quoted(3, spec_p)
+            elif n in (4, 6, 7):
+                d = self.e.repo / "docs/plans"
+                d.mkdir(parents=True, exist_ok=True)
+                (d / "plan.txt").write_text("\n".join("* " + p for p in plan_p) + "\n", encoding="utf-8")
+                msg = quoted(n, plan_p)
+            else:
+                msg = checklist(n)
+            lines.append(shown(self.stop(msg)))
+            out = self.e.prompt("/wf ok")
+            self.assertIn(f"Gate P{n} approved via /wf ok", shown(out))
+        for line in lines:
+            self.assertIn("(100%)", line)
+            self.assertNotIn("⚠", line)
+            self.assertIn("content not judged", line)
+        for n, name in ((3, "feature"), (4, "plan.txt"), (6, "plan.txt"), (7, "plan.txt")):
+            self.assertIn(f"quoted in {name}", lines[n - 1], n)
+        self.assertIsNone(self.e.state()["phase"])          # feature complete
+
+
+class TestGoldenGateLines(unittest.TestCase):
+    """The exact wording of each kind of gate line (what the user reads)."""
+
+    def test_golden(self):
+        base = {"found": 7, "total": 10, "missing": ["expected scale"], "unverified": ["reuse", "assumptions"],
+                "reasons": {"reuse": "quote not in file", "assumptions": "no quote"},
+                "claimed": ["codebase checkpoint"], "listed": 10, "file": "s.md", "checked": 6}
+        cases = [
+            ({"total": 0}, "Gate P3 reached · /wf ok to approve"),
+            (dict(base, listed=0), "Gate P3 reached · checklist 7/10 (70%) · no checklist lines in the gate message"
+                                   " · /wf ok to approve"),
+            (base, "Gate P3 reached · checklist 7/10 (70%) · missing: expected scale · quote not in file: reuse"
+                   " · no quote: assumptions · 6 quoted in s.md · 1 claimed, not checked"
+                   " · content not judged — your review · /wf ok to approve"),
+            (dict(base, file=None, file_note="no spec file changed since this feature started — quotes not checked"),
+             "Gate P3 reached · checklist 7/10 (70%) · missing: expected scale · quote not in file: reuse"
+             " · no quote: assumptions · no spec file changed since this feature started — quotes not checked"
+             " · 1 claimed, not checked · content not judged — your review · /wf ok to approve"),
+        ]
+        for entry, want in cases:
+            self.assertEqual(wf.gate_line(3, entry), want)
+
+
+class TestContextOncePerSession(unittest.TestCase):
+    """The rules summary goes to Claude once per session, phase sections are inline (never 'read
+    lines X–Y' of a file outside the project, which costs a read and a permission prompt), and a
+    section already sent in this session is not sent again."""
+
+    def setUp(self):
+        self.e = Env()
+
+    def tearDown(self):
+        self.e.close()
+
+    def p(self, text, sid="s1"):
+        return ctx(self.e.run("UserPromptSubmit", prompt=text, session_id=sid))
+
+    def test_no_command_ever_asks_claude_to_read_the_doc(self):
+        for level in ("standard", "strict"):
+            for sid in ("a", "b"):
+                texts = [self.p(f"/wf on {level}", sid)] + [self.p(f"/wf {n}", sid) for n in range(11)]
+                texts += [self.p("/wf pause", sid), self.p("/wf resume", sid), self.p("/wf new", sid)]
+                texts.append(ctx(self.e.run("SessionStart", source="compact", session_id=sid)))
+                for t in texts:
+                    self.assertNotIn("too long to include", t)
+                    self.assertNotIn("with the Read tool", t)
+                    self.assertLess(len(t), wf.LIMIT + 1)
+
+    def test_every_phase_section_fits_inline_after_the_spine(self):
+        doc = (ROOT / "Claude-Workflows-Best-Practices.md").read_text()
+        for n in range(11):
+            self.p("/wf on", sid=f"fresh{n}")
+            self.assertIn(wf.phase_section(doc, n).strip()[:40], self.p(f"/wf {n}", sid=f"fresh{n}"), n)
+
+    def test_spine_is_sent_once_per_session(self):
+        self.assertIn("Prime rule", self.p("/wf on"))
+        t = self.p("/wf 3")
+        self.assertNotIn("Prime rule", t)
+        self.assertIn("## Phase 3", t)
+        self.assertIn("still apply", t)
+        self.assertIn("Prime rule", self.p("/wf 4", sid="s2"))          # another session: sent again
+
+    def test_same_phase_section_is_not_resent_in_the_session(self):
+        self.p("/wf on")
+        self.assertIn("## Phase 3", self.p("/wf 3"))
+        again = self.p("/wf 3")
+        self.assertNotIn("## Phase 3", again)
+        self.assertIn("Phase 3 rules sent earlier in this session still apply", again)
+
+    def test_session_start_and_compaction_always_resend(self):
+        self.p("/wf on")
+        self.p("/wf 3")
+        for source in ("startup", "clear", "compact"):
+            t = ctx(self.e.run("SessionStart", source=source, session_id="s1"))
+            self.assertIn("Prime rule", t, source)
+            nxt = self.p("let's continue")              # a long section rides on the next message
+            self.assertIn("## Phase 3", t + nxt, source)
+            self.assertNotIn("## Phase 3", self.p("and then?"), source)   # once
+
+    def test_long_phase_after_a_fresh_spine_comes_with_the_next_message(self):
+        self.p("/wf on")
+        self.p("/wf 10")
+        t = ctx(self.e.run("SessionStart", source="compact", session_id="s1"))
+        self.assertNotIn("## Phase 10 — Deployment", t)
+        self.assertIn("come with the user's next message", t)
+        self.assertIn("## Phase 10 — Deployment", self.p("next"))
+
+    def test_off_then_on_resends(self):
+        self.p("/wf on")
+        self.p("/wf off")
+        self.assertIn("Prime rule", self.p("/wf on"))
+
+    def test_approval_sends_the_next_phase_once(self):
+        self.p("/wf on")
+        self.p("/wf 3")
+        self.e.run("Stop", last_assistant_message="spec\n[[gate P3]]", session_id="s1")
+        t = self.p("/wf ok")
+        self.assertIn("## Phase 4", t)
+        self.assertNotIn("Prime rule", t)
+

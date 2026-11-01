@@ -1,9 +1,9 @@
 # Claude Planning - Implementation Workflows and Best Practices
 
 > **Invoke this skill at the start of any new feature, integration, or implementation session.**
-> **Approval is explicit.** A phase is not approved until the user writes a clear confirmation (e.g. "approved", "looks good", "proceed").
+> **Approval is explicit.** A phase is not approved until the user gives a clear confirmation. With the `wf` plugin on, that is the command `/wf ok`, and nothing else: never treat other words as approval, in any language.
 > Work through every phase in order. Do not skip phases. Do not proceed past an exit gate until it is explicitly cleared.
-> **Gate marker:** end every message that reaches an exit gate with one line per checklist item of that phase (`- <item>: <where it is covered>` or `- <item>: N/A — <why>`), then the line `[[gate P<n>]]` (n = the phase number). The `wf` plugin (`/wf on`) scores the items, shows the result to the user, and moves to the next phase when the user approves.
+> **Gate marker:** end every message that reaches an exit gate with one line per checklist item of that phase (`- <item>: <where it is covered>`, `- <item>: n/a — <why>` or `- <item>: missing`; for items marked (file), a passage quoted word for word from the spec/plan file), then the line `[[gate P<n>]]` (n = the phase number). The `wf` plugin (`/wf on`) checks the quotes against the file, shows the result to the user, and moves to the next phase when the user approves.
 >
 > **This is the full reference.** For everyday use, keep [`Claude-Workflows-Best-Practices-Compact.md`](./Claude-Workflows-Best-Practices-Compact.md) loaded as the always-on spine and read the matching section here when you enter a phase or need a full checklist — that keeps token cost and drift down on long sessions.
 >
@@ -46,7 +46,7 @@ After loading, summarize to the user:
 Do not proceed to Phase 1 until the user confirms your summary is correct or provides corrections.
 
 **Gate checklist:** tier named · CLAUDE.md loaded · ROADMAP.md checked · touched code located
-*(At the gate: one line per item — `- <item>: <where it is covered>` or `- <item>: N/A — <why>` — then `[[gate P<n>]]`. Items marked (file) must also be in the spec/plan file.)*
+*(At the gate: one line per item — `- <item>: <where it is covered>`, `- <item>: n/a — <why>` or `- <item>: missing` — then `[[gate P<n>]]`. For items marked (file), quote a passage word for word from the spec/plan file in double quotes; the plugin searches the file for that exact text.)*
 
 ---
 
@@ -66,7 +66,7 @@ Do not proceed to Phase 2 until the user confirms.
 **Superpowers:** `brainstorming` reads the project before its first message and plays the request back. That first message **is** the Prerequisites + Phase 1 summary — don't produce a second one. It must name the `CLAUDE.md` constraints and prior decisions that apply, and the user's confirmation or correction of it clears this gate.
 
 **Gate checklist:** architecture · constraints · conventions · prior decisions
-*(At the gate: one line per item — `- <item>: <where it is covered>` or `- <item>: N/A — <why>` — then `[[gate P<n>]]`. Items marked (file) must also be in the spec/plan file.)*
+*(At the gate: one line per item — `- <item>: <where it is covered>`, `- <item>: n/a — <why>` or `- <item>: missing` — then `[[gate P<n>]]`. For items marked (file), quote a passage word for word from the spec/plan file in double quotes; the plugin searches the file for that exact text.)*
 
 ---
 
@@ -97,7 +97,7 @@ If you cannot answer all three clearly — stay in Phase 2 and ask the user for 
 **Superpowers:** brainstorming's questions and playback chunks are this phase. It may offer proposals the user can correct — allowed only as marked guesses about *what* they want, never *how* to build it. Brainstorming moves on to *Lay out the approaches* once it feels it understands; **before** that message, state the three exit answers above plus the prior-solution search result. The approaches message is the first act of Phase 3.
 
 **Gate checklist:** exact problem · constraints · what's different · prior-solution search
-*(At the gate: one line per item — `- <item>: <where it is covered>` or `- <item>: N/A — <why>` — then `[[gate P<n>]]`. Items marked (file) must also be in the spec/plan file.)*
+*(At the gate: one line per item — `- <item>: <where it is covered>`, `- <item>: n/a — <why>` or `- <item>: missing` — then `[[gate P<n>]]`. For items marked (file), quote a passage word for word from the spec/plan file in double quotes; the plugin searches the file for that exact text.)*
 
 ---
 
@@ -171,7 +171,7 @@ One required output, one optional companion — saved to your spec directory, e.
 > Ask the user how they want to view the HTML. If they have local browser access, just open the file. If the project runs on a remote/headless host, serve it: run `python3 -m http.server 8090` from the project root and open `http://<host>:8090/<spec-path>/spec-[feature-name].html` from a machine that can reach it (LAN, SSH tunnel, or a mesh VPN like Tailscale). Kill with Ctrl+C when done.
 
 **Gate checklist:** behavior *(file)* · interfaces *(file)* · edge cases *(file)* · transactional integrity *(file)* · assumptions *(file)* · access-control matrix *(file)* · expected scale *(file)* · reuse *(file)* · presentation vs logic *(file)* · codebase checkpoint
-*(At the gate: one line per item — `- <item>: <where it is covered>` or `- <item>: N/A — <why>` — then `[[gate P<n>]]`. Items marked (file) must also be in the spec/plan file.)*
+*(At the gate: one line per item — `- <item>: <where it is covered>`, `- <item>: n/a — <why>` or `- <item>: missing` — then `[[gate P<n>]]`. For items marked (file), quote a passage word for word from the spec/plan file in double quotes; the plugin searches the file for that exact text.)*
 
 ---
 
@@ -224,7 +224,7 @@ One required output, one optional companion — saved to your plans directory, e
 - External dependencies called out in a highlighted warning box
 
 **Gate checklist:** global constraints *(file)* · ownership map *(file)* · exit state per step *(file)* · verification per step *(file)* · checkpoint Q1–Q3 · checkpoint Q4 external deps · checkpoint Q5 likely wrong
-*(At the gate: one line per item — `- <item>: <where it is covered>` or `- <item>: N/A — <why>` — then `[[gate P<n>]]`. Items marked (file) must also be in the spec/plan file.)*
+*(At the gate: one line per item — `- <item>: <where it is covered>`, `- <item>: n/a — <why>` or `- <item>: missing` — then `[[gate P<n>]]`. For items marked (file), quote a passage word for word from the spec/plan file in double quotes; the plugin searches the file for that exact text.)*
 
 ---
 
@@ -261,7 +261,7 @@ Check:
 **Exit gate:** The plan is structurally sound. No broken intermediate states. Dependency order is correct. All assumptions are surfaced and verified. User has approved.
 
 **Gate checklist:** intermediate states · dependency graph · command dry-run · design-shape pass · abuse-case pass · scale pass · reinvention/hardcode pass
-*(At the gate: one line per item — `- <item>: <where it is covered>` or `- <item>: N/A — <why>` — then `[[gate P<n>]]`. Items marked (file) must also be in the spec/plan file.)*
+*(At the gate: one line per item — `- <item>: <where it is covered>`, `- <item>: n/a — <why>` or `- <item>: missing` — then `[[gate P<n>]]`. For items marked (file), quote a passage word for word from the spec/plan file in double quotes; the plugin searches the file for that exact text.)*
 
 ---
 
@@ -314,10 +314,10 @@ Do not create a new TDD document, and do not append the output as a separate sec
 2. The 3 test stubs are written in the real test runner and confirmed to be in a legitimate RED state (failing on assertion, not syntax) — and, on Superpowers executors, moved into their owning tasks.
 3. Strictly zero implementation/production code written yet.
 4. Execution method chosen (Superpowers: subagent-driven or native) — this is where `writing-plans`' handoff question gets answered.
-5. The user approves the Phase 6 gate (e.g. "approved" or "start Phase 7") — approving the Phase 6 gate is the go to execute. Approving the plan (Phase 4) or an intermediate test-design message is not: if an execution method was preset, `writing-plans` treats "plan approved" as the signal to start.
+5. The user approves the Phase 6 gate (`/wf ok` with the plugin) — approving the Phase 6 gate is the go to execute. Approving the plan (Phase 4) or an intermediate test-design message is not: if an execution method was preset, `writing-plans` treats "plan approved" as the signal to start.
 
 **Gate checklist:** isolated workspace · test matrix in tasks *(file)* · RED confirmed · execution method
-*(At the gate: one line per item — `- <item>: <where it is covered>` or `- <item>: N/A — <why>` — then `[[gate P<n>]]`. Items marked (file) must also be in the spec/plan file.)*
+*(At the gate: one line per item — `- <item>: <where it is covered>`, `- <item>: n/a — <why>` or `- <item>: missing` — then `[[gate P<n>]]`. For items marked (file), quote a passage word for word from the spec/plan file in double quotes; the plugin searches the file for that exact text.)*
 
 ---
 
@@ -360,7 +360,7 @@ Everything else stays a ruling — that keeps the speed the executors are built 
 **Exit gate:** All plan steps implemented. All tests passing. No unplanned changes introduced. Execution record saved.
 
 **Gate checklist:** tests green · execution record *(file)* · no unplanned changes
-*(At the gate: one line per item — `- <item>: <where it is covered>` or `- <item>: N/A — <why>` — then `[[gate P<n>]]`. Items marked (file) must also be in the spec/plan file.)*
+*(At the gate: one line per item — `- <item>: <where it is covered>`, `- <item>: n/a — <why>` or `- <item>: missing` — then `[[gate P<n>]]`. For items marked (file), quote a passage word for word from the spec/plan file in double quotes; the plugin searches the file for that exact text.)*
 
 ---
 
@@ -384,7 +384,7 @@ Report findings to the user. Flag any recommended doc updates.
 **Exit gate:** Findings reported. Doc updates flagged or completed. User sign-off received. If significant divergence was found, trigger a Phase 9 update immediately before closing Phase 8 — do not defer to the next session.
 
 **Gate checklist:** plan vs reality · CLAUDE.md updates · duplication / inlined config · ROADMAP.md
-*(At the gate: one line per item — `- <item>: <where it is covered>` or `- <item>: N/A — <why>` — then `[[gate P<n>]]`. Items marked (file) must also be in the spec/plan file.)*
+*(At the gate: one line per item — `- <item>: <where it is covered>`, `- <item>: n/a — <why>` or `- <item>: missing` — then `[[gate P<n>]]`. For items marked (file), quote a passage word for word from the spec/plan file in double quotes; the plugin searches the file for that exact text.)*
 
 ---
 
@@ -409,7 +409,7 @@ Say:
 Write the update so that a fresh session with no conversation history can resume work immediately from the document alone.
 
 **Gate checklist:** work plan updated · CLAUDE.md updated · ROADMAP.md
-*(At the gate: one line per item — `- <item>: <where it is covered>` or `- <item>: N/A — <why>` — then `[[gate P<n>]]`. Items marked (file) must also be in the spec/plan file.)*
+*(At the gate: one line per item — `- <item>: <where it is covered>`, `- <item>: n/a — <why>` or `- <item>: missing` — then `[[gate P<n>]]`. For items marked (file), quote a passage word for word from the spec/plan file in double quotes; the plugin searches the file for that exact text.)*
 
 ---
 
@@ -456,7 +456,7 @@ Verification is not just testing. Implementation passing tests is NOT done. A de
 **Exit gate:** Artifact verified locally; security gate and operational-readiness gate passed with real evidence; deployed; health + routes confirmed live; rollback path known. Only then is the work "done."
 
 **Gate checklist:** artifact boots locally · auth 401/403 · session cookies · IDOR replay · indexes (EXPLAIN) · monitoring + alerting · rollback target · lands through a PR
-*(At the gate: one line per item — `- <item>: <where it is covered>` or `- <item>: N/A — <why>` — then `[[gate P<n>]]`. Items marked (file) must also be in the spec/plan file.)*
+*(At the gate: one line per item — `- <item>: <where it is covered>`, `- <item>: n/a — <why>` or `- <item>: missing` — then `[[gate P<n>]]`. For items marked (file), quote a passage word for word from the spec/plan file in double quotes; the plugin searches the file for that exact text.)*
 
 ---
 
@@ -478,7 +478,7 @@ Where a Superpowers skill and this list disagree, this list wins.
 - Name the tier and get my confirmation before any change — including "quick, clear tasks", "just dive in", bug fixes (systematic-debugging) and spikes. Every tier works on a branch, never the starting branch; spikes never merge.
 - Specs/plans: [gitignored — always pass them by absolute path | committed — move them into the worktree at Phase 6 and commit there]. Never commit them to the starting branch.
 - Design doc = Phase 3 spec: include the Phase 3 sections and run the Phase 3 checkpoint before asking me to approve it.
-- After writing-plans: no execution-method question until the end of Phase 6. Plan approval is not a go; execution starts only when I approve the Phase 6 gate (e.g. "start Phase 7").
+- After writing-plans: no execution-method question until the end of Phase 6. Plan approval is not a go; execution starts only when I approve the Phase 6 gate (`/wf ok`).
 - Plan Global Constraints copy the access-control matrix, scale target, reuse list, config rule and ownership map verbatim.
 - Worktrees: always isolate, no need to ask (native tool, else `.worktrees/`), at the start of Phase 6. If `.worktrees` isn't gitignored or creation fails, stop and ask; never work in place. On resume, enter the existing worktree.
 - Phase 6 RED stubs: after proving RED, move them into their owning tasks; never commit failing tests ahead of their task.
@@ -509,7 +509,7 @@ Phase 4          Plan Writing          Ordered steps with exit states and verifi
                  OUTPUT                YYYY-MM-DD-[feature]-plan.md (+ optional plan-[feature].html only if asked)
 Phase 5          Adversarial Review    Break the plan + command dry-run + design-shape pass + abuse-case (security) + scale + reinvention/hardcode · fresh subagent when risky
                  LOOP-BACK             Surface fix → Ph.4 | Arch issue → Ph.3 | Wrong problem → Ph.2
-Phase 6          TDD Planning          Worktree first (resume = enter existing) · test matrix written INTO plan tasks · RED stubs proven, then moved into owning tasks · pick method · go = Phase 6 gate approved ("start Phase 7")
+Phase 6          TDD Planning          Worktree first (resume = enter existing) · test matrix written INTO plan tasks · RED stubs proven, then moved into owning tasks · pick method · go = Phase 6 gate approved (`/wf ok`)
 Phase 7          TDD Implementation    In the Phase 6 worktree · Red→Green→Refactor, vertical slices · extra stops (regression, design ruling, out-of-map file) · structural review after core tasks · save Execution record
 Phase 8          Post-Implementation   Plan vs. reality (every ruling = divergence), doc updates flagged
 Phase 9          Living Doc Update     After each phase + on checkpoint triggers (gate cleared, context warning, user signal)

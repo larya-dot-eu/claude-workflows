@@ -74,6 +74,20 @@
           }
         ],
         "matcher": "Bash"
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/wf.py",
+              "PreToolUse"
+            ],
+            "timeout": 10
+          }
+        ],
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit"
       }
     ],
     "Stop": [

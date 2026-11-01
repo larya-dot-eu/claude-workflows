@@ -3,7 +3,7 @@
 A single, battle-tested process file for using an AI coding agent (Claude Code, Cursor, etc.) on real
 features without shipping self-inflicted outages or security holes.
 
-**Version:** v2.0.2 — the workflow as an invisible Claude Code plugin (`/wf on`), now with `/wf help` and a one-command status line. Previous: [v2.0.1](https://github.com/larya-dot-eu/claude-workflows/releases/tag/v2.0.1) — see [Releases](https://github.com/larya-dot-eu/claude-workflows/releases) for changelog.
+**Version:** v2.1.0 — gates that work in any language: spec/plan items are checked by exact quotes, gates are approved only with `/wf ok`, Claude can't move phases on its own, safe terminal output, and the rules summary goes to Claude once per session with no extra file reads. Previous: [v2.0.2](https://github.com/larya-dot-eu/claude-workflows/releases/tag/v2.0.2) — see [Releases](https://github.com/larya-dot-eu/claude-workflows/releases) for changelog.
 
 **→ [`Claude-Workflows-Best-Practices.md`](./Claude-Workflows-Best-Practices.md)**
 
@@ -118,6 +118,10 @@ Then start a new session (or run `/reload-plugins`) so the hooks load.
   `/wf help` answers in your terminal. Installing changes nothing yet — the skin stays off until `/wf on`.
 - **Update:** `claude plugin update wf@claude-workflows`, then a new session. To get updates
   automatically, turn on auto-update for the `claude-workflows` marketplace in `/plugin` → Marketplaces.
+  Your phases, timeline and settings live outside the plugin folder and are kept across updates. A
+  session that is already running keeps the old version until `/reload-plugins` or a new session.
+  **From v2.0.x to v2.1.0:** approve gates with `/wf ok` (typing "approved" no longer approves), and
+  (file) checklist items now quote the spec/plan word for word.
 - **Remove:** `claude plugin uninstall wf@claude-workflows` (or disable it in `/plugin`). Its memory of
   phases lives in `~/.claude/plugins/data/wf-claude-workflows/` — delete that folder to forget everything.
 - **Nothing happens?** Check `python3 --version` (without Python the skin silently does nothing), then
@@ -139,14 +143,14 @@ What a feature looks like:
 |---|---|
 | `/wf on` | `WF ▸ on · standard · no phase yet` |
 | "Let's add CSV export to reports" | `WF ▸ brainstorming started → Phase 0 (Tier + Prereqs)` |
-| *(Claude summarises the project and the request, ends with its checklist)* | `WF ▸ Gate P1 reached · checklist 8/8 (100%) · all items ✓` |
-| `approved` | `WF ▸ Gate P1 approved → Phase 2 (Explore)` |
-| *(questions … the spec)* | `WF ▸ Gate P3 reached · checklist 8/10 (80%) · missing: access-control matrix, expected scale` |
-| "the matrix: only report owners may export" | *(Claude adds it and ends at the gate again)* `· checklist 10/10` |
-| `approved` | `WF ▸ Gate P3 approved → Phase 4 (Plan)` … and so on to Phase 10 |
+| *(Claude summarises the project and the request, ends with its checklist)* | `WF ▸ Gate P1 reached · checklist 8/8 (100%) · 8 claimed, not checked · content not judged — your review · /wf ok to approve` |
+| `/wf ok` | `WF ▸ Gate P1 approved via /wf ok → Phase 2 (Explore)` |
+| *(questions … the spec)* | `WF ▸ Gate P3 reached · checklist 8/10 (80%) · missing: access-control matrix, expected scale · … · content not judged — your review` |
+| "the matrix: only report owners may export" | `WF ▸ Gate P3 still waiting — this message is feedback; type /wf ok to approve` · *(Claude adds it and ends at the gate again)* `· checklist 10/10` |
+| `/wf ok` | `WF ▸ Gate P3 approved via /wf ok → Phase 4 (Plan)` … and so on to Phase 10 |
 | `/wf status` | `P0 ✓ · P1 ✓ · P2 ✓ · P3 ✓ · P4 70% (gate)` |
 
-You never type "read the workflow file" or "now do phase 4" — approving a gate is enough.
+You never type "read the workflow file" or "now do phase 4" — `/wf ok` at a gate is enough.
 
 ### Which level when
 
@@ -170,7 +174,7 @@ in `.claude/settings.json`, that one wins inside the project — `/wf statusline
 - **Once per machine:** `/wf default standard` and `/wf statusline` (so the phase is always under your
   prompt — no manual editing; `/wf statusline off` undoes it).
 - **One feature, one `/wf new`** (brainstorming does it for you). On a feature branch it becomes its own feature.
-- **Read the "missing:" list before you approve.** The % shows what was *addressed*, not whether it's good.
+- **Read the gate line before you type `/wf ok`.** The % shows what was *addressed* (quotes found, items claimed), not whether it's good.
 - **`/wf pause` for detours** (a spike, a side question, an unrelated fix), then `/wf resume` — not
   `off`, which forgets the phase.
 - **Go back on purpose only:** when Phase 5 sends the plan back, type `/wf 4`. Claude recommends it; you decide.
@@ -182,6 +186,7 @@ in `.claude/settings.json`, that one wins inside the project — `/wf statusline
 |---|---|
 | `/wf help` · `/wf help <command>` | The everyday commands · one command explained with an example (shown in your terminal only) |
 | `/wf on` · `/wf on strict` | Switch the skin on for this project + branch (default level, or the one you name) |
+| `/wf ok` · `/wf ok 3` | Approve the gate that is waiting (the only way to approve) · approve only if gate 3 is the one waiting |
 | `/wf pause` · `/wf resume` | Go silent but remember the phase · continue where you paused |
 | `/wf off` | Fully off, phase forgotten |
 | `/wf lite` · `/wf standard` · `/wf strict` | Change level (switches on if off) |
@@ -199,38 +204,67 @@ in `.claude/settings.json`, that one wins inside the project — `/wf statusline
 | `strict` | Standard + Phase 5 always by a fresh subagent, Quick tier always confirmed, constraints injected into every subagent, merges blocked before Phase 10. | same + a few lines per subagent |
 
 **How phases move — without you prompting them.** When Claude reaches an exit gate it ends its
-message with `[[gate P3]]`. Reply *approved* / *looks good* / *proceed* and the skin moves exactly one
-phase and hands Claude only that phase's rules. Anything with *but*, *change*, a question mark, etc. is
-not an approval, and a turn that ends without the marker clears the pending gate — a side question
-can never be mistaken for approval. If a marker is ever missed, `/wf 4` puts you back on track. Going *back* (e.g. Phase 5
+message with `[[gate P3]]`. Type `/wf ok` (or `/wf ok 3`, which only approves gate 3) and the skin
+moves exactly one phase and hands Claude only that phase's rules. That command is the only approval:
+the plugin never reads approval from what you write, in any language, so everything else you type at a
+gate is feedback (the terminal says so), and a turn that ends without the marker clears the pending
+gate — a side question can never be mistaken for approval. If a marker is ever missed, `/wf 4` puts you back on track. Going *back* (e.g. Phase 5
 sends the plan back to Phase 4) is always your call: Claude recommends it, you type `/wf 4`; a
-marker for an earlier phase is treated as a recap and never erases your timeline.
+marker for an earlier phase is treated as a recap and never erases your timeline. Claude can never move
+the phase *forward* on its own: a marker for a later phase (`[[gate P7]]` while in Phase 3) is refused —
+you see `⚠ Gate P7 marker at Phase 3 not applied`, and Claude is told on your next message — and a
+Superpowers skill that starts early (`writing-plans` before the spec gate is approved, an executor
+before the Phase 6 gate) gets a stop warning instead of a phase change. The one exception is
+brainstorming's first message, which closes Phase 0 and Phase 1 together, and only when its Phase 0
+checklist is complete.
 
-**What you see in the terminal** (shown to you only — none of it is sent to Claude, so it costs no context):
+**What you see in the terminal** (shown to you only — none of it is sent to Claude, so it costs no context;
+the one exception is a refused gate marker, which Claude is told about once, on your next message):
 
 ```
 WF ▸ brainstorming started → Phase 0 (Tier + Prereqs)
-WF ▸ Gate P1 approved → Phase 2 (Explore)
-WF ▸ Gate P3 reached · checklist 7/10 (70%) · missing: access-control matrix, expected scale · not in file: reuse
-WF ▸ ⚠ writing-plans — spec (Phase 3) is not approved yet
+WF ▸ Gate P1 approved via /wf ok → Phase 2 (Explore)
+WF ▸ Gate P3 reached · checklist 8/10 (80%) · missing: expected scale · quote not in file: reuse · 7 quoted in 2026-11-01-report.md · 1 claimed, not checked · content not judged — your review · /wf ok to approve
+WF ▸ ⚠ writing-plans — spec (Phase 3) is not approved yet — /wf ok first
+WF ▸ ⚠ Gate P7 marker at Phase 3 not applied — phases move one at a time, only with your /wf ok (current: Phase 3)
 ```
 
 - **Checklist %** — every gate has a checklist taken from the full doc. Claude lists each item on its own
-  line (`- expected scale: §4 of the spec` or `- expected scale: N/A — pure function`). Only real answers
-  count: *missing*, *TBD*, *left out*, *partially* don't. For the spec (P3) and plan (P4, P6) the hook also
-  checks the file: an item Claude calls covered that isn't in the file shows as *not in file*. It measures
-  **coverage, not quality** — reading the gate is still your job.
+  line: `- <item>: <where it is covered>`, `- <item>: n/a — <why>` or `- <item>: missing`. The plugin reads
+  no language: it decides only from those fixed tokens and from exact text. For the spec (P3) and plan
+  (P4, P6, P7), items marked *(file)* must quote a passage word for word from the file
+  (`- interfaces: "<exact sentence>"`); the plugin searches the newest spec/plan file for that text
+  (formatting, line wraps and typographic quotes don't matter; the passage must be at least 15
+  characters and different for each item). The line then says what failed (`quote not in file`,
+  `no quote`, `quote too short`, `same quote as another item`) and how many items are only
+  *claimed, not checked*. It measures **coverage, not quality** — the line ends with
+  *content not judged — your review*, because reading the gate is still your job.
 - **Timeline** — `/wf status` shows `P0 ✓ · P1 ✓ · P2 ⚠ skipped · P3 70% (gate)`. A phase left without an
-  approved gate (Claude jumping ahead, a skill starting early) is marked *skipped*, so you can see whether
-  brainstorming really went through Phases 1, 2 and 3.
+  approved gate (you jumping ahead with `/wf <n>`) is marked *skipped*, so the timeline always shows which
+  gates were really approved.
 - **Status line** — `[WF P3 70% · ✓✓⚠ · standard]` (current phase, its checklist %, earlier phases).
-- **strict** — when a gate has missing items, Claude gets one extra turn to do them (or mark them N/A with a
-  reason) and ends at the gate again. Once per gate; never while Claude is asking you a question.
+- **Protected checks** — when you approve the spec (P3) or plan (P4, P6, P7) gate, the plugin pins that
+  file (path + SHA-256). Later gates check the pinned file, never a newer one that appears next to it
+  (`⚠ newer file … not checked`), and a spec edited after its approval is flagged
+  (`⚠ spec … changed after its Phase 3 approval — re-read it`). The checklists are snapshotted when a
+  feature starts, so a project rules doc that drops items mid-feature shows
+  `⚠ rules changed since this feature started: −2 items (…)`, and a project doc without a checklist
+  for a phase says the built-in one is used. Writes to the plugin's own state folder (with Write/Edit,
+  or a shell command naming that folder) ask you first: only your `/wf` commands should change phases
+  and approvals. The shell check is best effort — it looks for the folder's path in the command.
+- **Safe output** — every line the plugin prints is cleaned first: control characters (terminal escape
+  sequences), invisible bidi/zero-width characters are removed and lines are length-capped, because
+  checklist labels, file names and branch names come from the project. If your locale isn't UTF-8
+  (e.g. `LANG=de_DE.ISO-8859-1`), or you set `WF_ASCII=1`, symbols become plain ASCII (`>`, `+`, `!`).
+  If the plugin itself fails, you see one line, `WF ▸ internal error (<hook>) — details in …/wf-error.log`,
+  instead of a silent gap; the session is never interrupted.
+- **strict** — when a gate has missing items, Claude gets one extra turn to do them (or mark them `n/a` with a
+  reason, or quote the file) and ends at the gate again. Once per gate; never while Claude is asking you a question.
 
 **With Superpowers.** When the skin is on, the skills drive the phases: `brainstorming` starts a feature
-at the tier check, `writing-plans` enters Phase 4 (and is told not to ask for an execution method yet),
-`subagent-driven-development` / `executing-plans` enter Phase 7 — or warn and stop if Phases 5–6
-haven't happened — and `finishing-a-development-branch` is held until Phases 8–9 are approved. Keep
+at the tier check, `writing-plans` runs in Phase 4 (and is told not to ask for an execution method yet),
+`subagent-driven-development` / `executing-plans` run in Phase 7 — a skill started before its gate is
+approved with `/wf ok` gets a stop warning and never moves the phase — and `finishing-a-development-branch` is held until Phases 8–9 are approved. Keep
 the override block from the full doc's *Running on Superpowers* section in your `CLAUDE.md`:
 Superpowers only guarantees that `CLAUDE.md` outranks its skills.
 
@@ -275,15 +309,15 @@ Or do it by hand — nothing activates on its own; cloning this repo just gives 
 2. Load the compact file each session — either paste it / reference it manually, or set up the hooks
    below once and it loads automatically in every session of that project.
 3. Tell the agent to follow the workflow for the feature at hand.
-4. Hold the gates: a phase isn't approved until *you* write the confirmation. Don't let it skip ahead.
+4. Hold the gates: a phase isn't approved until *you* type `/wf ok`. Don't let it skip ahead.
 
 Small, bounded changes (a typo, a config tweak, an obvious one-file fix) don't need the full pipeline —
 the workflow's **Task Tiers** section defines a quick tier that skips the planning phases but never the
 deploy gates.
 
-## Holding a gate — what to check before you write "approved"
+## Holding a gate — what to check before you type `/wf ok`
 
-The gates only work if you actually read what you're approving. A rubber-stamped "approved" turns the
+The gates only work if you actually read what you're approving. A rubber-stamped `/wf ok` turns the
 whole workflow into ceremony. The minimum look per gate:
 
 - **Phase 1 (context):** is the summary actually *your* project, or a plausible-sounding generic one?

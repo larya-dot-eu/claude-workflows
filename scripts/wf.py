@@ -33,7 +33,8 @@ PHASE_NAMES = {0: "Tier + Prereqs", 1: "Context", 2: "Explore", 3: "Spec", 4: "P
 HELP_SHOWN = ("The /wf help text was shown to the user directly in their terminal. Reply with one short "
               "line only, e.g. 'Help is shown above.' Do nothing else.")
 HELP = ("/wf commands: `/wf on [lite|standard|strict]`, `/wf off`, `/wf pause`, `/wf resume`, "
-        "`/wf lite|standard|strict`, `/wf default <level>`, `/wf status`, `/wf <0-10>` (jump to a phase), "
+        "`/wf ok [n]` (approve the waiting gate), `/wf lite|standard|strict`, `/wf default <level>`, `/wf status`, "
+        "`/wf <0-10>` (jump to a phase), "
         "`/wf new` (new feature, back to the tier check), `/wf dirs <spec> <plan>`, `/wf statusline`.")
 
 
@@ -89,7 +90,8 @@ def every_phase_rules(spine_text):
 
 def _git(cwd, *args):
     try:
-        r = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, timeout=5)
+        r = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=5)
         return r.stdout.strip() if r.returncode == 0 else None
     except Exception:
         return None
@@ -143,7 +145,7 @@ class Store:
         """The state file to use: a branch the skin moved away from redirects to where it went."""
         p = self.path(cwd)
         try:
-            target = json.loads(p.read_text()).get("moved_to")
+            target = json.loads(p.read_text(encoding="utf-8")).get("moved_to")
             if target and Path(target).is_file():
                 return Path(target)
         except Exception:
@@ -158,9 +160,9 @@ class Store:
         if mine.exists():
             return None
         try:
-            ptr = json.loads(self.pointer(cwd).read_text())
+            ptr = json.loads(self.pointer(cwd).read_text(encoding="utf-8"))
             origin = Path(ptr["path"])
-            state = json.loads(origin.read_text())
+            state = json.loads(origin.read_text(encoding="utf-8"))
         except Exception:
             return None
         branch = repo_identity(cwd)[1]
@@ -173,7 +175,7 @@ class Store:
 
     def default_level(self):
         try:
-            lvl = json.loads((data_dir(self.env) / "config.json").read_text()).get("default_level")
+            lvl = json.loads((data_dir(self.env) / "config.json").read_text(encoding="utf-8")).get("default_level")
             return lvl if lvl in LEVELS else DEFAULT_LEVEL
         except Exception:
             return DEFAULT_LEVEL
@@ -182,7 +184,7 @@ class Store:
         p = data_dir(self.env) / "config.json"
         p.parent.mkdir(parents=True, exist_ok=True)
         try:
-            cfg = json.loads(p.read_text())
+            cfg = json.loads(p.read_text(encoding="utf-8"))
         except Exception:
             cfg = {}
         cfg["default_level"] = level
@@ -195,14 +197,14 @@ class Store:
     def peek(self, cwd):
         """The saved state, read without locking, or None when this repo+branch has none."""
         try:
-            return json.loads(self.resolve(cwd).read_text())
+            return json.loads(self.resolve(cwd).read_text(encoding="utf-8"))
         except Exception:
             return None
 
     def load(self, cwd):
         s = self.blank()
         try:
-            s.update(json.loads(self.resolve(cwd).read_text()))
+            s.update(json.loads(self.resolve(cwd).read_text(encoding="utf-8")))
         except Exception:
             pass
         return s
@@ -237,7 +239,7 @@ class Store:
 def _atomic_write(path, obj, indent=1):
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp-")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(obj, f, indent=indent) if not isinstance(obj, bytes) else f.buffer.write(obj)
         os.replace(tmp, path)
     except BaseException:
@@ -248,13 +250,57 @@ def _atomic_write(path, obj, indent=1):
 
 # ---------------------------------------------------------------- output helpers
 
+LINE_MAX = 300      # characters per terminal line the plugin prints
+ITEM_MAX = 80       # characters per value taken from a project (label, file or branch name)
+
+
+def safe(text, line_max=LINE_MAX):
+    """Text that is safe to print in a terminal. Removes every control character but the newline
+    (ESC, so no escape sequences: colours, cursor moves, window titles, hyperlinks) and every
+    invisible format character (bidi overrides, zero-width marks), and caps each line's length.
+    Applied to everything the user sees, because labels, file and branch names come from projects."""
+    import unicodedata
+    out = []
+    for line in str(text or "").replace("\r\n", "\n").split("\n"):
+        line = "".join(" " if c == "\t" else c for c in line
+                       if c == "\t" or unicodedata.category(c) not in ("Cc", "Cf"))
+        out.append(line if len(line) <= line_max else line[:line_max - 1] + "…")
+    return "\n".join(out[:40])
+
+
+def clip(value, n=ITEM_MAX):
+    """A project-supplied value on one line, at most n characters."""
+    v = " ".join(safe(value, 10_000).split())
+    return v if len(v) <= n else v[:n - 1] + "…"
+
+
+ASCII_MAP = str.maketrans({"▸": ">", "✓": "+", "⚠": "!", "⏸": "||", "→": "->", "—": "-", "–": "-",
+                           "·": "|", "…": "...", "≠": "!=", "§": "S", "×": "x"})
+
+
+def ascii_only(env):
+    """True when the user's terminal may not show UTF-8: WF_ASCII=1, or a locale that isn't UTF-8."""
+    if (env or {}).get("WF_ASCII") == "1":
+        return True
+    loc = next(((env or {}).get(k) for k in ("LC_ALL", "LC_CTYPE", "LANG") if (env or {}).get(k)), "")
+    return bool(loc) and loc not in ("C", "POSIX") and not re.search(r"utf-?8", loc, re.I)
+
+
+def for_terminal(text, env):
+    """The final form of a line the user sees: safe, and plain ASCII if the terminal needs it."""
+    text = safe(text)
+    if ascii_only(env):
+        text = text.translate(ASCII_MAP).encode("ascii", "replace").decode("ascii")
+    return text
+
+
 def output(event, text, show=None):
     """Hook JSON: `text` goes to Claude (additionalContext), `show` is a line only the user sees."""
     out = {}
     if text:
         out["hookSpecificOutput"] = {"hookEventName": event, "additionalContext": text}
     if show:
-        out["systemMessage"] = "WF ▸ " + show
+        out["systemMessage"] = "WF ▸ " + safe(show)
     return out or None
 
 
@@ -272,9 +318,19 @@ def show_status(state):
     return line + (f"\n   {tl}" if tl and (state.get("timeline") or {}) else "")
 
 
-def skin_context(state, env, cwd, with_phase=True, budget=LIMIT):
-    """What Claude needs while the skin is on: spine (or lite rules) + current phase section,
-    kept under `budget` characters (a phase that doesn't fit is given as an exact line range to read)."""
+SESSION = {"id": None}   # the Claude Code session of the hook event being handled (set in handle())
+
+
+def has_context(state):
+    """True when this session's context already holds the rules summary the plugin sent."""
+    sid = SESSION["id"]
+    return bool(sid) and state.get("ctx_session") == sid
+
+
+def skin_context(state, env, cwd, with_phase=True, budget=LIMIT, fresh=False):
+    """What Claude needs while the skin is on: spine (or lite rules) + current phase section, kept under
+    `budget` characters. Sent once per session: when this session already has the spine (and the phase
+    section), only a one-line reminder goes out. `fresh` (session start, /clear, compaction) resends it."""
     spine = read_doc(SPINE, env, cwd)
     if not spine:
         spine = (f"(Workflow rules file not found: `{SPINE}` is neither in this project nor in the plugin. "
@@ -282,19 +338,40 @@ def skin_context(state, env, cwd, with_phase=True, budget=LIMIT):
     if state["level"] == "lite":
         rules = every_phase_rules(spine) or spine
         return "Claude-Workflows skin (lite): apply these rules in every step.\n\n" + rules
-    parts = ["Claude-Workflows skin is on (level %s). This project follows the phased workflow below; "
-             "the user clears every exit gate. When you reach a phase's exit gate, end your message with "
-             "the line `[[gate P<n>]]` (n = the phase number) and wait for the user. If you answer a question "
-             "while still waiting at that gate, end that message with the same line again. Going back to an earlier "
-             "phase (e.g. the Phase 5 loop-back table) is the user's call: recommend it and ask them to type "
-             "`/wf <n>`." % state["level"],
-             spine]
-    if state["level"] == "strict":
-        parts.append("Strict level: run Phase 5 as one fresh-context subagent on the most capable model; "
-                     "the Quick tier always needs the user's explicit confirmation.")
-    head = "\n\n".join(p for p in parts if p)
-    if with_phase and state["phase"] is not None:
-        head += "\n\n" + phase_context(state["phase"], env, cwd, budget - len(head) - 2)
+    if has_context(state) and not fresh:
+        head = ("The Claude-Workflows rules and gate instructions sent earlier in this session still apply "
+                f"(level {state['level']}).")
+    else:
+        parts = ["Claude-Workflows skin is on (level %s). This project follows the phased workflow below; "
+                 "the user clears every exit gate. When you reach a phase's exit gate, end your message with "
+                 "the line `[[gate P<n>]]` (n = the phase number) and wait for the user. The user approves a gate only by "
+                 "typing `/wf ok`; never treat other words as approval, in any language. If you answer a question "
+                 "while still waiting at that gate, end that message with the same line again. Going back to an earlier "
+                 "phase (e.g. the Phase 5 loop-back table) is the user's call: recommend it and ask them to type "
+                 "`/wf <n>`." % state["level"],
+                 spine]
+        if state["level"] == "strict":
+            parts.append("Strict level: run Phase 5 as one fresh-context subagent on the most capable model; "
+                         "the Quick tier always needs the user's explicit confirmation.")
+        head = "\n\n".join(p for p in parts if p)
+        state["injected"] = None   # a fresh context has no phase section yet
+    ph = state["phase"]
+    state["phase_due"] = None
+    if with_phase and ph is not None:
+        if state.get("injected") == ph and has_context(state) and not fresh:
+            head += f" The Phase {ph} rules sent earlier in this session still apply."
+        else:
+            section = phase_context(ph, env, cwd, budget - len(head) - 2, allow_read=False)
+            if section is not None:
+                head += "\n\n" + section
+                state["injected"] = ph
+            else:
+                # Spine and section don't fit in one hook message: the section comes with the user's next
+                # message (see on_prompt) instead of an instruction to read a file outside the project.
+                head += (f"\n\nCurrent phase: {ph} ({PHASE_NAMES.get(ph, '?')}). Its full rules come with the "
+                         "user's next message; until then work from the summary above.")
+                state["phase_due"] = ph
+    state["ctx_session"] = SESSION["id"]
     return head
 
 
@@ -308,7 +385,7 @@ def phase_lines(doc_text, n):
     return first, first + section.count("\n")
 
 
-def phase_context(n, env, cwd, budget=LIMIT):
+def phase_context(n, env, cwd, budget=LIMIT, allow_read=True):
     doc = read_doc(DOC, env, cwd)
     lead = f"Current phase: {n} ({PHASE_NAMES.get(n, '?')}). "
     rule = "\n\n" + checklist_instruction(n, checks_from_doc(doc, n) or CHECKS.get(n, []))
@@ -318,6 +395,8 @@ def phase_context(n, env, cwd, budget=LIMIT):
     text = lead + "Full rules for this phase:\n\n" + phase_section(doc, n) + rule
     if len(text) <= budget:
         return text
+    if not allow_read and len(text) <= LIMIT:
+        return None   # fits in a message of its own: the caller sends it separately
     lines = phase_lines(doc, n)
     where = f" lines {lines[0]}–{lines[1]}" if lines else ""
     return (lead + f"Its rules are too long to include here: read `{doc_path(DOC, env, cwd)}`{where} "
@@ -354,7 +433,7 @@ def _project_statusline(cwd):
     root = Path(repo_root(cwd) or cwd) if cwd else None
     for name in ("settings.local.json", "settings.json"):
         try:
-            if root and json.loads((root / ".claude" / name).read_text()).get("statusLine"):
+            if root and json.loads((root / ".claude" / name).read_text(encoding="utf-8")).get("statusLine"):
                 return root / ".claude" / name
         except Exception:
             pass
@@ -367,7 +446,7 @@ def _is_ours(statusline_setting):
 
 def _plugin_config(env):
     try:
-        return json.loads((data_dir(env) / "config.json").read_text())
+        return json.loads((data_dir(env) / "config.json").read_text(encoding="utf-8"))
     except Exception:
         return {}
 
@@ -469,7 +548,7 @@ def statusline_chain(raw_stdin, env, previous=None):
     if previous:
         try:
             before = subprocess.run(previous, shell=True, input=raw_stdin, capture_output=True, text=True,
-                                    timeout=3).stdout.rstrip("\n")
+                                    encoding="utf-8", errors="replace", timeout=3).stdout.rstrip("\n")
         except Exception:
             before = ""
     try:
@@ -486,7 +565,7 @@ HELP_GUIDE = """help — everyday use
   /wf pause · resume  go quiet for a side task · continue where you were
   /wf status          where am I: P0 ✓ · P1 ✓ · P2 ⚠ skipped · P3 70%
   /wf off             fully off for this project
-  At a gate: reply "approved" (or "start Phase 7") → next phase
+  /wf ok              approve the gate that is waiting → next phase (only way to approve)
   Rarely:  /wf strict · /wf 4 (go back) · /wf new · /wf dirs · /wf default · /wf statusline
   More: /wf help <command>, e.g. /wf help strict · full guide: README → 'Quick start'"""
 
@@ -513,9 +592,9 @@ HELP_TOPICS = {
               "  Example: /wf strict   ·   /wf default standard",
     "gate": "Gates — Claude ends a phase with its checklist lines and [[gate P3]].\n"
             "  You see: WF ▸ Gate P3 reached · checklist 8/10 (80%) · missing: …\n"
-            "  Read the missing list, then reply approved / looks good / proceed → next phase.\n"
-            "  Anything with but, change or a question mark is not an approval.\n"
-            "  Example: approved   ·   start Phase 7 (after the Phase 6 gate)",
+            "  Read the gate, then type /wf ok (or /wf ok 3) → next phase.\n"
+            "  Anything else you type is feedback: free text never approves, in any language.\n"
+            "  Example: /wf ok   ·   /wf ok 6 (the go for Phase 7)",
     "new": "/wf new — start a new feature: back to the tier check, timeline cleared.\n"
            "  Brainstorming does this for you; on a branch it makes that branch its own feature.\n"
            "  Example: /wf new",
@@ -534,7 +613,7 @@ HELP_TOPICS = {
                   "  Example: /wf statusline   ·   /wf statusline off (removes it, restores yours)",
 }
 HELP_TOPICS.update({lvl: HELP_TOPICS["levels"] for lvl in LEVELS})
-HELP_TOPICS.update({"approve": HELP_TOPICS["gate"], "approved": HELP_TOPICS["gate"]})
+HELP_TOPICS.update({"approve": HELP_TOPICS["gate"], "approved": HELP_TOPICS["gate"], "ok": HELP_TOPICS["gate"]})
 
 
 def help_text(topic=None):
@@ -576,7 +655,7 @@ def run_command(cmd, args, state, store, env, cwd):
         if state["phase"] is None and state["level"] != "lite":
             n, why = guess_phase(cwd, state.get("completed_at") or 0, state.get("dirs"))
             if n is not None:
-                state.update(phase=n, injected=n)
+                state.update(phase=n)
                 guess = (f"\n\nNo saved phase for this branch on this machine; {why}. Ask the user: "
                          f"\"Looks like Phase {n} ({PHASE_NAMES[n]}) — correct? (`/wf <n>` to change)\"")
         lead = f"{tell}workflow skin ON ({describe(state)})." + guess + old_hooks_warning(cwd) + "\n\n"
@@ -594,7 +673,7 @@ def run_command(cmd, args, state, store, env, cwd):
         return state, (tell + "workflow skin PAUSED (phase kept; `/wf resume` continues). Until it is "
                        "resumed, ignore the workflow phases and gate markers.")
     if cmd == "off":
-        state.update(enabled="off", phase=None, gate_pending=None, injected=None)
+        state.update(enabled="off", phase=None, gate_pending=None, injected=None, ctx_session=None)
         return state, (tell + "workflow skin OFF. From now on ignore the workflow phases, gates and "
                        "gate markers injected earlier in this session.")
     if cmd == "default" and args and args[0] in LEVELS:
@@ -614,6 +693,20 @@ def run_command(cmd, args, state, store, env, cwd):
     if cmd == "statusline":
         msg = statusline_remove(env) if args[:1] == ["off"] else statusline_install(env, cwd)
         return None, tell + msg
+    if cmd == "ok":
+        gate = state.get("gate_pending")
+        want = args[0].lstrip("p") if args else None
+        if not engine_on(state):
+            why = {"paused": "the skin is paused — `/wf resume` first", "off": "the skin is off here"}.get(
+                state["enabled"], "the lite level has no gates")
+            return None, tell + f"{why}; nothing was approved."
+        if gate is None:
+            return None, (tell + "no gate is waiting, so nothing was approved. If Claude meant to stop at a gate, "
+                          "restate it and end the message with its `[[gate P<n>]]` line.")
+        if want is not None and not (want.isdecimal() and want.isascii() and int(want) == gate):
+            return None, (tell + f"`/wf ok {args[0]}` not applied — the gate waiting is Phase {gate}. "
+                          f"Type `/wf ok` or `/wf ok {gate}`.")
+        return state, approve(state, env, cwd)
     if cmd == "phase":
         n = int(args[0])
         if not 0 <= n <= 10:
@@ -621,7 +714,7 @@ def run_command(cmd, args, state, store, env, cwd):
         if state["enabled"] == "off":
             state["enabled"] = "on"
         move_to(state, n)
-        state.update(gate_pending=None, injected=n)
+        state.update(gate_pending=None)
         lead = f"{tell}moved to Phase {n} ({PHASE_NAMES[n]}).\n\n"
         return state, lead + skin_context(state, env, cwd, budget=LIMIT - len(lead))
     if cmd == "new":
@@ -629,41 +722,28 @@ def run_command(cmd, args, state, store, env, cwd):
             state["enabled"] = "on"
         store.unfollow(cwd, state)
         new_feature(state)
-        state.update(phase=0, injected=0)
+        state.update(phase=0)
         lead = f"{tell}new feature — starting at the tier check.\n\n"
         return state, lead + skin_context(state, env, cwd, budget=LIMIT - len(lead))
     return None, "Show the user in one line: unknown /wf command. " + HELP
 
 
 # ---------------------------------------------------------------- per-phase checklists
-# What each gate must cover, from Claude-Workflows-Best-Practices.md. A hit means the item is
-# present (or explicitly N/A) in Claude's gate message or the phase's spec/plan file — it measures
-# coverage, not quality. Reading the gate stays the user's job.
+# What each gate must cover, from Claude-Workflows-Best-Practices.md. The hook never interprets
+# words in any language. It decides only from fixed tokens and exact text:
+#   - `- <label>: "<passage>"`  the passage is searched for, verbatim, in the spec/plan file
+#   - `- <label>: n/a — <why>`  not applicable (the reason may be in any language)
+#   - `- <label>: missing`      not done
+# Anything else on a label's line is a claim that the hook reports as claimed, not checked.
+# It measures coverage, not quality: reading the gate stays the user's job.
 
 # The labels live in the full doc: each phase ends with a line
 #   **Gate checklist:** item · item *(file)* · …
 # so the doc stays the single source of the rules (a project's own copy wins). Items marked (file)
-# must also appear in the spec/plan file; FILE_PATTERNS says how to find each of them there.
+# must be backed by a passage quoted from the spec/plan file.
 
 GATE_LINE = re.compile(r"^\*\*Gate checklist:\*\*\s*(.+)$", re.M)
-
-FILE_PATTERNS = {
-    "behavior": r"behaviou?r",
-    "interfaces": r"interface|input|output|\bapi\b|signature",
-    "edge cases": r"edge case|error state|error case",
-    "transactional integrity": r"transaction|atomic|eventual",
-    "assumptions": r"assumption",
-    "access-control matrix": r"access[- \n]control|access boundar|authori[sz]ation|permission",
-    "expected scale": r"\bscale\b|req(uests)?/s|\brows\b",
-    "reuse": r"\breuse|net-new",
-    "presentation vs logic": r"presentation|hardcod|\bconfig\b",
-    "global constraints": r"global constraints",
-    "ownership map": r"ownership map",
-    "exit state per step": r"exit state",
-    "verification per step": r"verif|^\s*Expected:",
-    "test matrix in tasks": r"\[(happy|sad|edge)\]|zombies",
-    "execution record": r"^#+\s*Execution record",
-}
+EXEC_RECORD_RE = re.compile(r"^#+\s*Execution record", re.M | re.I)   # the heading the doc tells Claude to write
 
 
 def checks_from_doc(doc_text, n):
@@ -695,9 +775,36 @@ def items_for(n, env, cwd):
     return checks_from_doc(read_doc(DOC, env, cwd), n) or CHECKS.get(n, [])
 
 
+def rules_note(n, env, cwd):
+    """Say so when a project's own rules doc gives phase n no checklist and the built-in one is used."""
+    p = doc_path(DOC, env, cwd)
+    root = env.get("CLAUDE_PLUGIN_ROOT")
+    if not p or (root and p.resolve() == (Path(root) / DOC).resolve()) or not CHECKS.get(n):
+        return None
+    if checks_from_doc(read_doc(DOC, env, cwd), n):
+        return None
+    return f"{p.name} in this project has no Gate checklist for Phase {n} — using the plugin's built-in one"
+
+
+def snapshot_rules(state, env, cwd):
+    """Remember each phase's checklist labels when a feature starts, so a later edit of the rules doc
+    that drops items shows up at the gate instead of silently lowering the bar."""
+    if state.get("rules") is None and state.get("phase") is not None:
+        state["rules"] = {str(k): [l for l, _ in items_for(k, env, cwd)] for k in range(0, 11)}
+        return True
+    return False
+
+
+def rules_dropped(state, n, items):
+    before = (state.get("rules") or {}).get(str(n)) or []
+    now = {l for l, _ in items}
+    return [l for l in before if l not in now]
+
+
 # Phases whose gate claims are cross-checked against a file (the others are judged from the message).
 DEFAULT_DIRS = {"spec": ("docs/superpowers/specs", "docs/specs"), "plan": ("docs/superpowers/plans", "docs/plans")}
 PHASE_FILES = {3: "spec", 4: "plan", 6: "plan", 7: "plan"}
+MAX_FILE = 5_000_000   # bytes; a bigger spec/plan is reported as too large to check, never half-read
 
 
 def search_roots(cwd):
@@ -710,24 +817,33 @@ def search_roots(cwd):
     return roots
 
 
+def _is_text(p):
+    try:
+        with open(p, "rb") as f:
+            return b"\0" not in f.read(8192)
+    except OSError:
+        return False
+
+
 def doc_files(kind, cwd, dirs=None, since=0):
-    """[(mtime, path)] of spec or plan .md files changed after `since` ('/wf dirs' overrides the folders)."""
+    """[(mtime, path)] of the spec or plan files (any text file, any extension) changed after `since`
+    ('/wf dirs' overrides the folders). Hidden and binary files are skipped."""
     folders = ((dirs or {}).get(kind),) if (dirs or {}).get(kind) else DEFAULT_DIRS[kind]
     out = []
     for root in search_roots(cwd):
         for d in folders:
-            for p in (root / d).glob("*.md"):
+            for p in (root / d).glob("*"):
                 try:
-                    if p.is_file() and p.stat().st_mtime > since:
+                    if (not p.name.startswith(".") and p.is_file() and p.stat().st_mtime > since
+                            and _is_text(p)):
                         out.append((p.stat().st_mtime, p))
                 except OSError:
                     pass
     return sorted(out)
 
 
-NEGATIVE = re.compile(r"^\W*(missing|todo|tbd|not (yet )?(done|covered|written|checked|included)|"
-                      r"skipped|left out|none yet|pending|partial(ly)?|incomplete|\?+)(\W|$)", re.I)
-NA = re.compile(r"^\W*n/?a\b", re.I)
+NA = re.compile(r"^\W*n/?a(\W|$)", re.I)            # fixed token, not a word list
+MISSING = re.compile(r"^\W*missing(\W|$)", re.I)    # fixed token, not a word list
 
 
 def checklist_lines(message):
@@ -743,80 +859,176 @@ def checklist_lines(message):
     return out
 
 
+# ---- quoted passages: exact text, compared after normalising only how it is written
+
+QUOTE_PAIRS = (('"', '"'), ("\u201c", "\u201d"), ("\u201e", "\u201c"), ("\u201e", "\u201d"),
+               ("\u00ab", "\u00bb"), ("\u00bb", "\u00ab"), ("\u2039", "\u203a"), ("\u300c", "\u300d"),
+               ("\u300e", "\u300f"), ("`", "`"))
+QUOTE_RE = re.compile("|".join(re.escape(a) + "(.+?)" + re.escape(b) for a, b in QUOTE_PAIRS))
+MIN_QUOTE = 15   # characters, not counting spaces: long enough to point at real content
+
+_CHAR_MAP = str.maketrans({**{c: "-" for c in "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"},
+                           **{c: "'" for c in "\u2018\u2019\u201a\u201b\u2032"},
+                           **{c: '"' for c in "\u201c\u201d\u201e\u201f\u00ab\u00bb\u2039\u203a\u2033"},
+                           **{c: " " for c in "\u00a0\u2007\u202f\u200b\u2060\ufeff"}})
+_LINE_MARK = re.compile(r"^[ \t]*(?:[#>|]+|[-*+](?=\s))[ \t]*", re.M)   # heading, quote, table, bullet marks
+_LINK = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
+
+
+def norm_text(text):
+    """Text reduced to what it says, not how it is formatted: Unicode NFKC, case folded, typographic
+    dashes/quotes/spaces made plain, Markdown marks (line prefixes, links, emphasis, table pipes)
+    dropped and all whitespace, line breaks included, collapsed to one space. Language-blind."""
+    import unicodedata
+    t = unicodedata.normalize("NFKC", text or "").translate(_CHAR_MAP)
+    t = _LINK.sub(r"\1", _LINE_MARK.sub("", t))
+    t = re.sub(r"[*_`~|]", "", t)
+    return re.sub(r"\s+", " ", t).casefold().strip()
+
+
+def quotes_in(value):
+    """The passages quoted on a checklist line, in order."""
+    return [m for g in QUOTE_RE.findall(value or "") for m in (g if isinstance(g, tuple) else (g,)) if m]
+
+
+def check_quotes(value, norm_file, used):
+    """('found', key) or (reason, None) for a covered item's quoted passages. `used` holds the
+    passages earlier items already used: each item must stand on a passage of its own."""
+    qs = [norm_text(q) for q in quotes_in(value)]
+    if not qs:
+        return "no quote", None
+    long_enough = [q for q in qs if len(q.replace(" ", "")) >= MIN_QUOTE]
+    if not long_enough:
+        return "quote too short", None
+    fresh = [q for q in long_enough if q not in used]
+    if not fresh:
+        return "same quote as another item", None
+    for q in fresh:
+        if q in norm_file:
+            return "found", q
+    return "quote not in file", None
+
+
 def score(n, message, file_text=None, items=None):
-    """Score phase n's gate. An item counts only when Claude's gate message has a line
-    '- <label>: <where it is covered>' or '- <label>: N/A — why'. Negative answers (missing, TBD,
-    left out, …) don't count, and where a spec/plan file exists, a covered item whose topic isn't
-    in that file is 'unverified' and doesn't count either."""
+    """Score phase n's gate from Claude's checklist lines '- <label>: <value>'.
+    An item counts when its value is `n/a …`, or — for a (file) item while a spec/plan file exists —
+    a quoted passage found in that file, or — for any other item — any value except `missing`.
+    Covered (file) items that fail the quote check are listed in `unverified` with the reason;
+    items counted without a check are listed in `claimed`."""
     items = CHECKS.get(n, []) if items is None else items
     lines = checklist_lines(message)
-    found, missing, unverified, listed = 0, [], [], 0
+    norm_file = norm_text(file_text) if file_text is not None else None
+    found, missing, unverified, claimed, reasons, listed, used = 0, [], [], [], {}, 0, set()
     for label, is_file in items:
         value = lines.get(label.lower())
         if value is not None:
             listed += 1
-        rx = FILE_PATTERNS.get(label) if is_file else None
-        if not value or NEGATIVE.match(value):
+        if not value or MISSING.match(value):
             missing.append(label)
-        elif rx and file_text is not None and not NA.match(value) and not re.search(rx, file_text, re.I | re.M):
-            unverified.append(label)
+        elif NA.match(value):
+            found += 1
+        elif is_file and norm_file is not None:
+            why, key = check_quotes(value, norm_file, used)
+            if key:
+                used.add(key)
+                found += 1
+            else:
+                unverified.append(label)
+                reasons[label] = why
         else:
             found += 1
-    return {"found": found, "total": len(items), "missing": missing,
-            "unverified": unverified, "listed": listed}
+            claimed.append(label)
+    return {"found": found, "total": len(items), "missing": missing, "unverified": unverified,
+            "reasons": reasons, "claimed": claimed, "listed": listed}
 
 
-def phase_file(n, cwd, state=None):
-    """Text of the newest spec (P3) or plan (P4, P6, P7) file changed since this feature started, or None."""
+def file_sha(p):
+    try:
+        return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def phase_doc(n, cwd, state=None):
+    """{'name', 'path', 'text'} of the spec (P3) or plan (P4, P6, P7) file to check, or None when there is
+    none. Once a gate pinned a file (see approve), that file is checked, never a newer one that
+    appeared next to it ('newer' names it). 'text' is None when the file is too large or unreadable."""
     kind = PHASE_FILES.get(n)
     if not kind:
         return None
     state = state or {}
     files = doc_files(kind, cwd, state.get("dirs"), state.get("feature_start") or 0)
-    if not files:
+    pin = (state.get("pins") or {}).get(kind)
+    newer = None
+    if pin and Path(pin["path"]).is_file():
+        p = Path(pin["path"])
+        if files and files[-1][1].resolve() != p.resolve():
+            newer = files[-1][1].name
+    elif files:
+        p = files[-1][1]
+    else:
         return None
+    d = {"name": p.name, "path": str(p), "newer": newer}
     try:
-        with open(files[-1][1], errors="ignore") as f:
-            return f.read(500_000)
+        if p.stat().st_size > MAX_FILE:
+            return dict(d, text=None, why="too large to check")
+        return dict(d, text=p.read_text(encoding="utf-8", errors="replace"))
     except OSError:
-        return None
+        return dict(d, text=None, why="unreadable")
+
+
+def phase_file(n, cwd, state=None):
+    """Text of phase n's spec/plan file, or None."""
+    d = phase_doc(n, cwd, state)
+    return d and d["text"]
 
 
 def checklist_instruction(n, items=None):
-    labels = [l for l, _ in (CHECKS.get(n, []) if items is None else items)]
-    if not labels:
+    items = CHECKS.get(n, []) if items is None else items
+    if not items:
         return ""
-    return (f"At the Phase {n} gate, just before `[[gate P{n}]]`, list one line per checklist item, using these "
-            f"exact labels: " + "; ".join(labels) + ". Format: `- <label>: <where it is covered>` or "
-            "`- <label>: N/A — <why>`. Never list an item you did not do as covered.")
+    labels = [l for l, _ in items]
+    files = [l for l, f in items if f]
+    where = {"spec": "the spec", "plan": "the plan"}.get(PHASE_FILES.get(n), "the spec/plan")
+    text = (f"At the Phase {n} gate, just before `[[gate P{n}]]`, list one line per checklist item, using these "
+            f"exact labels: " + "; ".join(labels) + ". Format: `- <label>: <where it is covered>`, "
+            "`- <label>: n/a — <why>` or `- <label>: missing`. Never list an item you did not do as covered.")
+    if files:
+        text += (f" For " + "; ".join(files) + f": the value must contain a passage copied word for word "
+                 f"from {where} file, in double quotes (at least {MIN_QUOTE} characters, a different passage "
+                 "for each item), e.g. `- " + files[0] + ": \"<exact sentence from the file>\" (section …)`. "
+                 "The hook searches the file for that exact text.")
+    return text
 
 
 def gate_line(n, entry):
     if not entry.get("total"):
-        return f"Gate P{n} reached · waiting for your approval"
+        return f"Gate P{n} reached · /wf ok to approve"
     head = f"Gate P{n} reached · checklist {entry['found']}/{entry['total']} ({score_pct(entry)}%)"
     if not entry.get("listed"):
-        return head + " · no checklist lines in the gate message"
+        return head + " · no checklist lines in the gate message · /wf ok to approve"
     tail = []
     if entry["missing"]:
-        tail.append("missing: " + ", ".join(entry["missing"]))
-    if entry.get("unverified"):
-        tail.append("not in file: " + ", ".join(entry["unverified"]))
-    return head + (" · " + " · ".join(tail) if tail else " · all items ✓")
+        tail.append("missing: " + ", ".join(clip(l) for l in entry["missing"]))
+    by_reason = {}
+    for label in entry.get("unverified") or []:
+        by_reason.setdefault((entry.get("reasons") or {}).get(label, "not checked"), []).append(label)
+    for why, labels in by_reason.items():
+        tail.append(f"{clip(why)}: " + ", ".join(clip(l) for l in labels))
+    if entry.get("file_note"):
+        tail.append(clip(entry["file_note"], 2 * ITEM_MAX))
+    elif entry.get("file"):
+        tail.append(f"{entry.get('checked') or 0} quoted in {clip(entry['file'])}")
+    if entry.get("claimed"):
+        tail.append(f"{len(entry['claimed'])} claimed, not checked")
+    tail.append("content not judged — your review · /wf ok to approve")
+    return head + " · " + " · ".join(tail)
+
 
 
 # ---------------------------------------------------------------- phase engine
 
 GATE_RE = re.compile(r"^\s*\[\[gate P(\d{1,2})\]\]\s*$")
-APPROVE_RE = re.compile(
-    r"^(approved?|i approve|looks good|lgtm|proceed|go ahead|ok(ay)?|yes|yep|ship it|"
-    r"sounds good|perfect)\b", re.I)
-HARMLESS_NO = re.compile(r"\bno (changes?|issues?|problems?|objections?|further (changes?|comments?))\b"
-                         r"( needed)?", re.I)
-VETO_RE = re.compile(r"\b(but|except|however|change|fix|instead|not|no|don'?t|wait|first|before|"
-                     r"why|how|what|explain|redo|rename|remove|add)\b|\?", re.I)
-
-
 def gate_from_message(msg):
     """Phase n if the message's last non-empty line, outside code fences, is `[[gate Pn]]`."""
     if not msg:
@@ -834,21 +1046,11 @@ def gate_from_message(msg):
     return n if n is not None and 0 <= n <= 10 else None
 
 
-START_RE = re.compile(r"^(?:ok(?:ay)?[,.]?\s+)?(?:let'?s\s+)?start\s+phase\s+(\d{1,2})[.!]?$", re.I)
-
-
-def is_approval(text):
-    t = (text or "").strip()
-    if not t or len(t) > 80 or t.startswith("/"):
-        return False
-    return bool(APPROVE_RE.match(t)) and not VETO_RE.search(HARMLESS_NO.sub("", t))
-
-
 def move_to(state, n):
     """Set the phase and keep the timeline honest: phases left without an approved gate are
     'skipped'; going back (a loop-back) forgets everything from the target phase on."""
     if state["phase"] is None and n is not None:
-        state.update(timeline={}, feature_start=time.time())   # entering a feature from nothing
+        state.update(timeline={}, feature_start=time.time(), pins={}, rules=None)   # a feature from nothing
     old, tl = state["phase"], state.setdefault("timeline", {})
     if old is not None and n is not None:
         if n > old:
@@ -859,11 +1061,16 @@ def move_to(state, n):
         elif n < old:
             for k in [k for k in tl if int(k) >= n]:
                 del tl[k]
+            pins = state.get("pins") or {}
+            for kind, upto in (("spec", 3), ("plan", 4)):   # going back to (or before) the phase that wrote it
+                if n <= upto:
+                    pins.pop(kind, None)
     state["phase"] = n
 
 
 def new_feature(state):
-    state.update(phase=None, gate_pending=None, injected=None, timeline={}, feature_start=time.time())
+    state.update(phase=None, gate_pending=None, injected=None, timeline={}, feature_start=time.time(),
+                 pins={}, rules=None)
 
 
 def timeline_marks(state):
@@ -902,7 +1109,7 @@ def enter_phase(state, n, env, cwd, lead):
     move_to(state, n)
     state["gate_pending"] = None
     text = lead
-    if state.get("injected") != n:
+    if state.get("injected") != n or not has_context(state):
         text += "\n\n" + phase_context(n, env, cwd)
         state["injected"] = n
     return text
@@ -910,6 +1117,14 @@ def enter_phase(state, n, env, cwd, lead):
 
 def engine_on(state):
     return state["enabled"] == "on" and state["level"] != "lite"
+
+
+def engine_on_saved(store, cwd):
+    return store.load(cwd)["enabled"] == "on"
+
+
+SCORE_KEYS = ("found", "total", "missing", "unverified", "reasons", "claimed", "listed", "file", "file_note",
+              "checked")
 
 
 def on_stop(payload, env, store, cwd):
@@ -924,40 +1139,78 @@ def on_stop(payload, env, store, cwd):
             store.save(cwd, state)
         return output("Stop", None, f"Gate P{gate} marker at Phase {state['phase']} ignored (treated as a recap) "
                                     f"— to go back to Phase {gate}, type `/wf {gate}`")
-    if gate != state.get("gate_pending") or (gate is not None and state["phase"] != gate):
-        if gate is not None and state["phase"] != gate:
-            old = state["phase"]
-            move_to(state, gate)
-            if old is not None and old < gate:
-                # One message may close earlier phases too (brainstorming's first message is the Phase 1
-                # summary and can carry the Phase 0 items): a fully covered earlier checklist rides on
-                # this gate's approval instead of counting as skipped.
-                tl = state["timeline"]
-                for k in range(old, gate):
-                    r = score(k, payload.get("last_assistant_message"), None, items_for(k, env, cwd))
-                    if r["listed"] and r["found"] == r["total"]:
-                        tl[str(k)] = dict(r, status="combined")
+    if gate is not None and gate != state["phase"]:
+        # Claude's marker never moves the phase on its own. Single exception: brainstorming's first
+        # message closes Phase 0 and Phase 1 together — only when its Phase 0 checklist is complete.
+        ph, msg = state["phase"], payload.get("last_assistant_message")
+        r0 = score(0, msg, None, items_for(0, env, cwd)) if (ph, gate) == (0, 1) else None
+        if ph is None:
+            why = "no phase is set yet; type `/wf <n>` (or start brainstorming) first"
+        elif r0 is None:
+            why = f"phases move one at a time, only with your /wf ok (current: Phase {ph})"
+        elif not (r0["listed"] and r0["found"] == r0["total"]):
+            why = "its Phase 0 checklist is incomplete" + (f" (missing: {', '.join(r0['missing'])})"
+                                                           if r0["missing"] else "")
+        else:
+            why = None
+        if why:
+            state.update(gate_pending=None, notice=f"Your last message ended with `[[gate P{gate}]]` at Phase "
+                         f"{ph}; the plugin did not apply it: {why}. Stay in the current phase.")
+            store.save(cwd, state)
+            return output("Stop", None, f"⚠ Gate P{gate} marker at Phase {'–' if ph is None else ph} "
+                                        f"not applied — {why}")
+        move_to(state, gate)
+        state["timeline"]["0"] = dict(r0, status="combined")
+    if gate != state.get("gate_pending"):
         state["gate_pending"] = gate
         store.save(cwd, state)
     if gate is None:
         return None
     items = items_for(gate, env, cwd)
-    r = score(gate, payload.get("last_assistant_message"), phase_file(gate, cwd, state), items)
+    doc = phase_doc(gate, cwd, state)
+    r = score(gate, payload.get("last_assistant_message"), doc and doc["text"], items)
+    if any(f for _, f in items) and gate in PHASE_FILES:
+        if doc is None:
+            r.update(file_note=f"no {PHASE_FILES[gate]} file changed since this feature started — quotes not checked")
+        else:
+            r.update(file=doc["name"],
+                     file_note=f"{doc['name']} {doc['why']} — quotes not checked" if doc.get("why") else None,
+                     checked=sum(1 for l, f in items if f and l not in r["missing"] + r["unverified"]
+                                 + r["claimed"]) if doc["text"] is not None else 0)
     tl = state.setdefault("timeline", {})
     prev = tl.get(str(gate), {})
     if not r["listed"] and prev.get("listed"):
-        r = {k: prev[k] for k in ("found", "total", "missing", "unverified", "listed")}  # keep last real score
+        r = {k: prev[k] for k in SCORE_KEYS if k in prev}   # keep last real score
     missing = r["missing"] + r["unverified"]
     entry = dict(prev, **r)
     tl[str(gate)] = entry
-    out = output("Stop", None, gate_line(gate, entry))
+    warn = []
+    snapshot_rules(state, env, cwd)
+    dropped = rules_dropped(state, gate, items)
+    if dropped:
+        warn.append(f"⚠ rules changed since this feature started: −{len(dropped)} item"
+                    f"{'s' if len(dropped) > 1 else ''} ({', '.join(clip(l) for l in dropped)})")
+    note = rules_note(gate, env, cwd)
+    if note:
+        warn.append("⚠ " + note)
+    if doc and doc.get("newer"):
+        warn.append(f"⚠ newer file {clip(doc['newer'])} not checked — the approved one is {clip(doc['name'])}")
+    spec = (state.get("pins") or {}).get("spec")
+    if spec and gate > 3:
+        now = file_sha(spec["path"])
+        if now is None:
+            warn.append(f"⚠ the approved spec {clip(Path(spec['path']).name)} is gone")
+        elif now != spec["sha"]:
+            warn.append(f"⚠ spec {clip(Path(spec['path']).name)} changed after its Phase 3 approval — re-read it")
+    out = output("Stop", None, gate_line(gate, entry) + "".join("\n" + w for w in warn))
     body = (payload.get("last_assistant_message") or "").rsplit("[[gate", 1)[0].rstrip()
     if (state["level"] == "strict" and missing and not entry.get("nudged")
             and not payload.get("stop_hook_active") and not body.endswith("?")):
         entry["nudged"] = True
         out["decision"] = "block"
         out["reason"] = (f"Workflow checklist for the Phase {gate} gate is incomplete. Missing: "
-                         f"{', '.join(missing)}. Do each one (or decide it is N/A, with the reason), then end "
+                         f"{', '.join(missing)}. Do each one (or decide it is n/a, with the reason); for a "
+                         "(file) item, quote the exact passage from the file. Then end "
                          f"with the checklist lines and `[[gate P{gate}]]` again. {checklist_instruction(gate, items)} "
                          "(This reminder comes once per gate.)")
     store.save(cwd, state)
@@ -966,6 +1219,10 @@ def on_stop(payload, env, store, cwd):
 
 def approve(state, env, cwd):
     gate = state["gate_pending"]
+    doc = phase_doc(gate, cwd, state)
+    if doc:   # the approved spec/plan: later gates check this file, and a changed spec is flagged
+        state.setdefault("pins", {})[PHASE_FILES[gate]] = {"path": doc["path"], "sha": file_sha(doc["path"]),
+                                                           "phase": gate}
     tl = state.setdefault("timeline", {})
     tl[str(gate)] = dict(tl.get(str(gate), {}), status="done")
     for k, e in tl.items():
@@ -993,7 +1250,7 @@ def _skill_brainstorming(state, env, cwd):
                        "answers before its approaches message (`[[gate P2]]`); its design doc is the Phase 3 "
                        "spec (`[[gate P3]]`). Phase 0 checklist labels: "
                        + "; ".join(l for l, _ in items_for(0, env, cwd)) + ". Format of each line: "
-                       "`- <label>: <where covered>` or `- <label>: N/A — <why>`.")
+                       "`- <label>: <where covered>`, `- <label>: n/a — <why>` or `- <label>: missing`.")
 
 
 def _skill_writing_plans(state, env, cwd):
@@ -1003,8 +1260,11 @@ def _skill_writing_plans(state, env, cwd):
                 "user; finish the spec and get its approval first.")
     note = ("When writing-plans asks for an execution method: do not ask yet — Phase 4 checkpoint, "
             "Phase 5 and Phase 6 come first; the method is chosen at the end of Phase 6.")
-    if ph in (3, 4):
-        return enter_phase(state, 4, env, cwd, "Entering Phase 4 (Plan). " + note)
+    if ph == 3:
+        return ("writing-plans was started, but the spec (Phase 3) gate is not approved yet (the user approves "
+                "only with `/wf ok`). Stop and tell the user; do not write the plan before that.")
+    if ph == 4:
+        return enter_phase(state, 4, env, cwd, "Phase 4 (Plan). " + note)
     return note
 
 
@@ -1017,8 +1277,11 @@ def _skill_executor(state, env, cwd):
             "matrix, schema, a public interface or the scale design; a task needs a file outside the plan. "
             "Before the workspace is deleted, copy the ledger's Ruling / parked / minor (deferred) / \"no reachable "
             "spec\" lines into the plan under `## Execution record`.")
-    if ph in (6, 7):
-        return enter_phase(state, 7, env, cwd, "Entering Phase 7 (TDD Build). " + note)
+    if ph == 6:
+        return ("Plan execution was started, but the Phase 6 gate is not approved yet (the user approves only "
+                "with `/wf ok`; that is the go to execute). Stop and ask the user before executing.")
+    if ph == 7:
+        return enter_phase(state, 7, env, cwd, "Phase 7 (TDD Build). " + note)
     return note
 
 
@@ -1069,15 +1332,51 @@ def on_skill(name, event, env, store, cwd):
 # what the user sees when a skill doesn't change the phase: (warning, reminder)
 SKILL_SHOW = {
     "brainstorming": ("", "already in this feature's Phases 0–3"),
-    "writing-plans": ("spec (Phase 3) is not approved yet", "execution-method question waits until Phase 6"),
-    "subagent-driven-development": ("Phases 5–6 are not done yet", "extra stop conditions + Execution record on"),
-    "executing-plans": ("Phases 5–6 are not done yet", "extra stop conditions + Execution record on"),
+    "writing-plans": ("spec (Phase 3) is not approved yet — /wf ok first", "execution-method question waits until Phase 6"),
+    "subagent-driven-development": ("Phase 6 gate is not approved yet — /wf ok first", "extra stop conditions + Execution record on"),
+    "executing-plans": ("Phase 6 gate is not approved yet — /wf ok first", "extra stop conditions + Execution record on"),
     "finishing-a-development-branch": ("hold until Phases 8–9 are approved", "only push + PR or keep; no merge"),
     "systematic-debugging": ("", "tier check + branch before any debugging edits"),
 }
 
 
+STATE_WRITERS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
+
+
+def touches_state(payload, env):
+    """True when a tool call names the plugin's own data folder (phase state, approvals, config).
+    Best effort for shell commands: it looks for the folder's path in the command text."""
+    d = data_dir(env)
+    names = {str(d), str(d.resolve())}
+    home = os.path.expanduser("~")
+    names |= {n.replace(home, "~", 1) for n in list(names) if n.startswith(home)}
+    ti = payload.get("tool_input") or {}
+    if payload.get("tool_name") in STATE_WRITERS:
+        target = ti.get("file_path") or ti.get("notebook_path") or ""
+        try:
+            target = str(Path(os.path.expanduser(target)).resolve())
+        except (OSError, RuntimeError):
+            pass
+        return any(target == n or target.startswith(n.rstrip("/") + "/") for n in names)
+    command = ti.get("command") or ""
+    return any(n and n in command for n in names)
+
+
+def state_guard(payload, env, store, cwd):
+    if not touches_state(payload, env):
+        return None
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask",
+                                   "permissionDecisionReason":
+                                       "Workflow guard: this changes the wf plugin's own state (phases and gate "
+                                       f"approvals in {data_dir(env)}). Only the user's /wf commands should "
+                                       "change it — allow only if you asked for this."}}
+
+
 def on_pre_tool(payload, env, store, cwd):
+    if engine_on_saved(store, cwd):
+        guarded = state_guard(payload, env, store, cwd)
+        if guarded:
+            return guarded
     if payload.get("tool_name") == "Bash":
         return on_bash(payload, env, store, cwd)
     if payload.get("tool_name") == "Skill":
@@ -1095,7 +1394,7 @@ def guess_phase(cwd, since=0, dirs=None):
     plans, specs = doc_files("plan", cwd, dirs, since), doc_files("spec", cwd, dirs, since)
     for _, p in plans:
         try:
-            if re.search(FILE_PATTERNS["execution record"], p.read_text(errors="ignore"), re.I | re.M):
+            if EXEC_RECORD_RE.search(p.read_text(encoding="utf-8", errors="replace")):
                 return 8, f"plan {p} has an Execution record"
         except OSError:
             pass
@@ -1212,7 +1511,7 @@ def old_hooks_warning(cwd):
     for name in ("settings.json", "settings.local.json"):
         p = root / ".claude" / name
         try:
-            if SPINE in p.read_text() or "[Workflow] phases in order" in p.read_text():
+            if SPINE in p.read_text(encoding="utf-8") or "[Workflow] phases in order" in p.read_text(encoding="utf-8"):
                 return (f"\n\nAlso tell the user: `{p.relative_to(root)}` still has the old manual workflow hooks, "
                         "so the spine is loaded twice. Remove those two hooks; the wf plugin replaces them.")
         except Exception:
@@ -1237,9 +1536,38 @@ def install_statusline(env):
 
 
 def on_prompt(payload, env, store, cwd):
+    out = _on_prompt(payload, env, store, cwd)
+    state = store.load(cwd)
+    if engine_on(state) and snapshot_rules(state, env, cwd):
+        store.save(cwd, state)
+    note = state.pop("notice", None)
+    if note:   # tell Claude what the Stop hook refused last turn (a Stop line reaches only the user)
+        store.save(cwd, state)
+        out = _add_context(out, "wf: " + note, first=True)
+    due = state.get("phase_due")
+    if engine_on(state) and due is not None and due == state["phase"] and has_context(state):
+        current = ((out or {}).get("hookSpecificOutput") or {}).get("additionalContext", "")
+        section = phase_context(due, env, cwd, LIMIT - len(current) - 2, allow_read=False)
+        if section is not None:   # else it waits for a message with room
+            state.update(phase_due=None, injected=due)
+            store.save(cwd, state)
+            out = _add_context(out, section)
+    return out
+
+
+def _add_context(out, text, first=False):
+    out = out or {}
+    hso = out.setdefault("hookSpecificOutput", {"hookEventName": "UserPromptSubmit", "additionalContext": ""})
+    cur = hso.get("additionalContext", "")
+    hso["additionalContext"] = ((text + "\n\n" + cur) if first else (cur + "\n\n" + text)).strip()
+    return out
+
+
+def _on_prompt(payload, env, store, cwd):
     state = store.load(cwd)
     parsed = parse_command(payload.get("prompt", ""))
     if parsed:
+        waiting = state.get("gate_pending")
         new, text = run_command(*parsed, state, store, env, cwd)
         if new is not None:
             store.save(cwd, new)
@@ -1249,36 +1577,25 @@ def on_prompt(payload, env, store, cwd):
             show = help_text(args[0] if args else None)
         elif cmd == "statusline":
             show = text.split(": ", 1)[1]
+        elif cmd == "ok":
+            nxt = new and new["phase"]
+            show = (text.split(": ", 1)[1] if new is None else
+                    f"Gate P{waiting} approved via /wf ok → feature complete" if nxt is None else
+                    f"Gate P{waiting} approved via /wf ok → Phase {nxt} ({PHASE_NAMES[nxt]})")
         elif text.startswith("Show the user in one line: unknown"):
             show = f"unknown command '/wf {cmd}'. Type /wf help for the everyday commands."
         else:
             show = show_status(new or store.load(cwd))
         return output("UserPromptSubmit", text, show)
-    start = START_RE.match((payload.get("prompt") or "").strip())
-    if engine_on(state) and start:
-        n, gate = int(start.group(1)), state.get("gate_pending")
-        if gate is None or n != gate + 1:
-            where = "no gate is pending" if gate is None else f"the pending gate is Phase {gate}"
-            return output("UserPromptSubmit",
-                          f"wf: the user asked to start Phase {n}, but {where}; phases move one at a time"
-                          + (f" (next is Phase {gate + 1})" if gate is not None else "") +
-                          ". Tell the user in one line; to jump anyway they can type `/wf " + str(n) + "`.",
-                          f"start Phase {n} not applied — {where}")
-        payload = dict(payload, prompt="approved")
-    if engine_on(state) and is_approval(payload.get("prompt")):
-        if state.get("gate_pending") is None:
-            return output("UserPromptSubmit",
-                          "wf: no gate is pending, so this did not move the phase. If the user is approving a "
-                          "gate, restate which gate in one line and end your message with its `[[gate P<n>]]` "
-                          "line, so their next approval moves the phase.",
-                          "no gate pending — phase unchanged")
+    if engine_on(state) and state.get("gate_pending") is not None:
         gate = state["gate_pending"]
-        text = approve(state, env, cwd)
-        store.save(cwd, state)
-        nxt = state["phase"]
-        show = (f"Gate P{gate} approved → feature complete" if nxt is None
-                else f"Gate P{gate} approved → Phase {nxt} ({PHASE_NAMES[nxt]})")
-        return output("UserPromptSubmit", text, show)
+        # Free text is never read as an approval (in any language): only `/wf ok` approves.
+        return output("UserPromptSubmit",
+                      f"wf: the Phase {gate} gate is still waiting. This message is feedback, not an approval — "
+                      "the plugin never reads approval from free text. Work on what the user wrote. If they seem "
+                      f"to approve, do not move on: tell them in one line to type `/wf ok` to approve Phase {gate}, "
+                      f"and end your message with `[[gate P{gate}]]` again.",
+                      f"Gate P{gate} still waiting — this message is feedback; type /wf ok to approve")
     return None
 
 
@@ -1287,7 +1604,9 @@ def on_session_start(payload, env, store, cwd):
     state = store.load(cwd)
     if state["enabled"] != "on":
         return None
-    return output("SessionStart", skin_context(state, env, cwd))
+    text = skin_context(state, env, cwd, fresh=True)   # startup, /clear or compaction: the context is new
+    store.save(cwd, state)
+    return output("SessionStart", text)
 
 
 HANDLERS = {
@@ -1309,6 +1628,7 @@ def handle(event, payload, env):
     if not fn:
         return None
     repo_identity.cache_clear()
+    SESSION["id"] = payload.get("session_id")
     store = Store(env)
     followed = None
     if store.dir.is_dir() and not store.path(cwd).exists() and store.pointer(cwd).exists():
@@ -1317,7 +1637,7 @@ def handle(event, payload, env):
     out = _handle(event, payload, env, store, cwd, fn)
     if followed:
         st = store.load(cwd)
-        line = (f"WF ▸ branch changed {followed} → {repo_identity(cwd)[1]} · skin follows "
+        line = (f"WF ▸ branch changed {clip(followed)} → {clip(repo_identity(cwd)[1])} · skin follows "
                 f"({describe(st).split(', ', 1)[-1]})")
         out = out or {}
         out["systemMessage"] = line + ("\n" + out["systemMessage"] if out.get("systemMessage") else "")
@@ -1346,7 +1666,9 @@ def statusline(payload, env):
     state = Store(env).load(cwd)
     if state["enabled"] == "off":
         return ""
-    ph = "–" if state["phase"] is None else state["phase"]
+    ph = state["phase"] if isinstance(state["phase"], int) and 0 <= state["phase"] <= 10 else "–"
+    if state["level"] not in LEVELS:
+        state["level"] = DEFAULT_LEVEL
     if state["enabled"] == "paused":
         return f"[WF ⏸ P{ph}]"
     entry = (state.get("timeline") or {}).get(str(state["phase"]), {})
@@ -1356,11 +1678,31 @@ def statusline(payload, env):
     return "[WF " + " · ".join(x for x in (head, marks, state["level"]) if x) + "]"
 
 
+def log_error(env, event):
+    """Append the current exception to <data dir>/wf-error.log (kept under ~200 KB). Returns its path."""
+    import traceback
+    p = data_dir(env) / "wf-error.log"
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if p.exists() and p.stat().st_size > 200_000:
+            p.write_text("", encoding="utf-8")
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + f"[{event}]\n" + traceback.format_exc() + "\n")
+    except OSError:
+        pass
+    return p
+
+
+def _write(text):
+    sys.stdout.buffer.write(text.encode("utf-8"))
+    sys.stdout.flush()
+
+
 def main(argv):
     event = argv[1] if len(argv) > 1 else ""
     env = dict(os.environ)
     try:
-        raw = sys.stdin.read()
+        raw = sys.stdin.buffer.read().decode("utf-8", errors="replace")   # never the locale's encoding
         if event in ("statusline", "statusline-chain"):
             # The status line runs outside the plugin: our state dir is this script's own dir.
             env.setdefault("CLAUDE_PLUGIN_DATA", str(Path(__file__).resolve().parent))
@@ -1368,14 +1710,26 @@ def main(argv):
                 line = statusline_chain(raw, env, argv[2] if len(argv) > 2 else None)
             else:
                 line = statusline(json.loads(raw or "{}"), env)
-            print(line, end="")
+            _write(for_terminal(line, env).replace("\n", " "))
             return
-        payload = json.loads(raw or "{}")
+        try:
+            payload = json.loads(raw or "{}")
+        except ValueError:
+            return   # not a hook payload: nothing to act on, nothing to report
         out = handle(event, payload, env)
+        if out and out.get("systemMessage"):
+            out["systemMessage"] = for_terminal(out["systemMessage"], env)
         if out:
-            print(json.dumps(out))
+            _write(json.dumps(out))
     except Exception:
-        pass  # never break the session
+        # Never break the session, but never fail silently either: one line, details in a log file.
+        p = log_error(env, event)
+        with contextlib.suppress(Exception):
+            if event in ("statusline", "statusline-chain"):
+                _write("[WF error]")
+            elif event in HANDLERS:
+                _write(json.dumps({"systemMessage": for_terminal(f"WF ▸ internal error ({event}) — "
+                                                                 f"details in {p}", env)}))
 
 
 if __name__ == "__main__":
