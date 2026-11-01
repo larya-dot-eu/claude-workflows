@@ -286,6 +286,21 @@ def ascii_only(env):
     return bool(loc) and loc not in ("C", "POSIX") and not re.search(r"utf-?8", loc, re.I)
 
 
+BADGE_COLOR = 80   # 256-colour palette: light turquoise (#5fd7d7), easy to read on dark backgrounds
+
+
+def badge_color(text, env):
+    """The status-line badge in its colour. WF_COLOR=<0-255> picks another colour; WF_COLOR=off or
+    NO_COLOR (https://no-color.org) prints it plain. Added after cleaning, so only our own code is in it."""
+    if not text or (env or {}).get("NO_COLOR"):
+        return text
+    choice = str((env or {}).get("WF_COLOR", "")).strip().lower()
+    if choice in ("off", "none", "no", "false"):
+        return text
+    n = int(choice) if choice.isdecimal() and choice.isascii() and int(choice) <= 255 else BADGE_COLOR
+    return f"\x1b[38;5;{n}m{text}\x1b[0m"
+
+
 def for_terminal(text, env):
     """The final form of a line the user sees: safe, and plain ASCII if the terminal needs it."""
     text = safe(text)
@@ -554,12 +569,13 @@ def statusline_chain(raw_stdin, env, previous=None):
         except Exception:
             before = ""
     try:
-        ours = for_terminal(statusline(json.loads(raw_stdin or "{}"), env), env).replace("\n", " ")
+        ours = badge_color(for_terminal(statusline(json.loads(raw_stdin or "{}"), env), env).replace("\n", " "),
+                           env)
     except Exception:
         ours = ""
     # The previous status line is the user's own command: its output (colours included) is passed
     # through exactly as it printed it. Only our part is cleaned.
-    return " ".join(x for x in (before, ours) if x)
+    return "  ".join(x for x in (before, ours) if x)   # two spaces: the badge stands apart
 
 
 # ---------------------------------------------------------------- /wf help (shown to the user only)
@@ -611,7 +627,8 @@ HELP_TOPICS = {
     "default": "/wf default <level> — the level /wf on uses on this machine.\n"
                "  Example: /wf default standard",
     "statusline": "/wf statusline — once per machine: shows [WF P3 Spec · gate 70% · 3 approved · standard]\n"
-                  "  under the prompt (current phase, its gate score, earlier phases approved/skipped).\n"
+                  "  under the prompt (current phase, its gate score, earlier phases approved/skipped),\n"
+                  "  in light turquoise; WF_COLOR=<0-255> picks another colour, WF_COLOR=off prints it plain.\n"
                   "  It edits ~/.claude/settings.json for you (backup first, other settings kept);\n"
                   "  an existing status line (ponytail, caveman, your own) is kept word for word and\n"
                   "  shown first.\n"
@@ -1732,7 +1749,8 @@ def main(argv):
             if event == "statusline-chain":
                 _write(statusline_chain(raw, env, argv[2] if len(argv) > 2 else None))
             else:
-                _write(for_terminal(statusline(json.loads(raw or "{}"), env), env).replace("\n", " "))
+                _write(badge_color(for_terminal(statusline(json.loads(raw or "{}"), env), env).replace("\n", " "),
+                                   env))
             return
         try:
             payload = json.loads(raw or "{}")

@@ -3,7 +3,7 @@
 A single, battle-tested process file for using an AI coding agent (Claude Code, Cursor, etc.) on real
 features without shipping self-inflicted outages or security holes.
 
-**Version:** v2.1.2 — the status line passes an existing status line (e.g. ponytail) through untouched, colours included, and the WF badge is in plain words. Previous release: [v2.0.1](https://github.com/larya-dot-eu/claude-workflows/releases/tag/v2.0.1) — see [Releases](https://github.com/larya-dot-eu/claude-workflows/releases) for changelog.
+**Version:** v2.1.2 — the status line passes an existing status line (e.g. ponytail) through untouched, colours included, and the WF badge is in plain words, light turquoise and spaced apart. Previous release: [v2.0.1](https://github.com/larya-dot-eu/claude-workflows/releases/tag/v2.0.1) — see [Releases](https://github.com/larya-dot-eu/claude-workflows/releases) for changelog.
 
 **→ [`Claude-Workflows-Best-Practices.md`](./Claude-Workflows-Best-Practices.md)**
 
@@ -165,7 +165,8 @@ You never type "read the workflow file" or "now do phase 4" — `/wf ok` at a ga
 `/wf statusline` never replaces it. It **wraps** it: your command stays in `~/.claude/settings.json`
 word for word (so ponytail, caveman and similar plugins still recognise and update their own script
 there), runs first with the same input, and `[WF …]` is added after it — `🐴 ponytail [WF P3 Spec · standard]`. Its output, colours included,
-is shown exactly as it prints it; only the WF part is cleaned.
+is shown exactly as it prints it; only the WF part is cleaned. The WF badge follows it after two
+spaces, in light turquoise.
 Extra settings such as `padding` are kept. If your status line is slow (> 3 s) or fails, the WF badge
 still shows. `/wf statusline off` puts back exactly what you had. If a project sets its own status line
 in `.claude/settings.json`, that one wins inside the project — `/wf statusline` tells you.
@@ -247,7 +248,10 @@ WF ▸ ⚠ Gate P7 marker at Phase 3 not applied — phases move one at a time, 
   gates were really approved.
 - **Status line** — `[WF P3 Spec · gate 70% · 2 approved · 1 skipped · standard]`: the current phase, its
   gate score while a gate is waiting, how many earlier phases were approved or skipped, and the level.
-  Paused: `[WF paused · P3 Spec]`. `/wf status` shows which phases those were.
+  Paused: `[WF paused · P3 Spec]`. `/wf status` shows which phases those were. The badge is light
+  turquoise (256-colour 80, easy to read on dark backgrounds). Pick another colour with `WF_COLOR=<0–255>`
+  (e.g. `WF_COLOR=45` for a brighter cyan), or print it plain with `WF_COLOR=off` or `NO_COLOR=1` — set it
+  in your shell or under `"env"` in `~/.claude/settings.json`.
 - **Protected checks** — when you approve the spec (P3) or plan (P4, P6, P7) gate, the plugin pins that
   file (path + SHA-256). Later gates check the pinned file, never a newer one that appears next to it
   (`⚠ newer file … not checked`), and a spec edited after its approval is flagged

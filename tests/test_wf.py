@@ -32,6 +32,14 @@ SCRIPT_LETTERS = "".join(chr(c) for r in ((0x61, 0x7A), (0xE0, 0xFF), (0x100, 0x
                                           (0x430, 0x44F), (0x3042, 0x3093), (0x627, 0x64A)) for c in range(r[0], r[1] + 1))
 
 
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def visible(text):
+    """What a status line shows on screen: its text without colour codes."""
+    return ANSI.sub("", text)
+
+
 def gibberish(seed, n=6, letters=SCRIPT_LETTERS):
     """n made-up words from mixed scripts (deterministic per seed)."""
     rng = random.Random(seed)
@@ -251,7 +259,7 @@ class TestStatuslineInstall(unittest.TestCase):
             p = subprocess.run([sys.executable, str(script), "statusline"],
                                input=json.dumps({"workspace": {"current_dir": str(e.repo)}}),
                                capture_output=True, text=True, env={"PATH": os.environ["PATH"]})
-            self.assertEqual(p.stdout, "[WF no phase yet · standard]")
+            self.assertEqual(visible(p.stdout), "[WF no phase yet · standard]")
         finally:
             e.close()
 
@@ -333,7 +341,7 @@ class TestTerminalSafety(unittest.TestCase):
                 self.assertEqual(p.returncode, 0, p.stderr)
                 self.assertTrue(json.loads(p.stdout.decode("utf-8")), event)
             p = self.run_cli("statusline", json.dumps({"cwd": str(e.repo)}).encode(), env)
-            self.assertTrue(p.stdout.decode("utf-8").startswith("[WF P3"), p.stdout)
+            self.assertTrue(visible(p.stdout.decode("utf-8")).startswith("[WF P3"), p.stdout)
         finally:
             e.close()
 
@@ -1162,7 +1170,7 @@ class TestStatuslineSnippetQuoting(unittest.TestCase):
             cmd = json.loads((Path(e.env["CLAUDE_CONFIG_DIR"]) / "settings.json").read_text())["statusLine"]["command"]
             p = subprocess.run(cmd, shell=True, input=json.dumps({"workspace": {"current_dir": str(e.repo)}}),
                                capture_output=True, text=True)
-            self.assertEqual((p.returncode, p.stdout), (0, "[WF no phase yet · standard]"), p.stderr)
+            self.assertEqual((p.returncode, visible(p.stdout)), (0, "[WF no phase yet · standard]"), p.stderr)
         finally:
             e.close()
 
@@ -1531,7 +1539,7 @@ class StatuslineCase(unittest.TestCase):
         cmd = json.loads(self.settings.read_text())["statusLine"]["command"]
         p = subprocess.run(cmd, shell=True, input=json.dumps({"workspace": {"current_dir": str(self.e.repo)}}),
                            capture_output=True, text=True, env={"PATH": os.environ["PATH"]})
-        return p.stdout
+        return visible(p.stdout)
 
 
 class TestStatuslineInstall2(StatuslineCase):
@@ -1556,14 +1564,14 @@ class TestStatuslineInstall2(StatuslineCase):
         out = self.e.prompt("/wf statusline")
         self.assertIn("kept", shown(out).lower())
         self.e.prompt("/wf on")
-        self.assertEqual(self.run_statusline(), "PONY [WF no phase yet · standard]")
+        self.assertEqual(self.run_statusline(), "PONY  [WF no phase yet · standard]")
 
     def test_running_twice_does_not_chain_itself(self):
         self.settings.write_text(json.dumps({"statusLine": {"type": "command", "command": "printf PONY"}}))
         self.e.prompt("/wf statusline")
         self.e.prompt("/wf statusline")
         self.e.prompt("/wf on")
-        self.assertEqual(self.run_statusline(), "PONY [WF no phase yet · standard]")
+        self.assertEqual(self.run_statusline(), "PONY  [WF no phase yet · standard]")
         self.assertEqual(len(list(self.claude.glob("settings.json.wf-backup-*"))), 1)
 
     def test_invalid_settings_are_never_touched(self):
@@ -1631,7 +1639,7 @@ class TestStatuslineCoexistence(StatuslineCase):
         self.install_over({"type": "command",
                            "command": """printf '%s' "it's" >/dev/null; v=PO; printf "${v}NY" """})
         self.e.prompt("/wf on")
-        self.assertEqual(self.run_statusline(), "PONY [WF no phase yet · standard]")
+        self.assertEqual(self.run_statusline(), "PONY  [WF no phase yet · standard]")
 
     def test_slow_previous_status_line_does_not_hide_ours(self):
         self.install_over({"type": "command", "command": "sleep 10; printf LATE"})
@@ -1965,7 +1973,7 @@ class TestStatusline212(unittest.TestCase):
     def test_previous_status_line_keeps_its_colours(self):
         self.e.prompt("/wf on")
         out = self.chain("printf '\\033[38;5;108m[PONY]\\033[0m'")
-        self.assertTrue(out.startswith("\x1b[38;5;108m[PONY]\x1b[0m [WF "), repr(out))
+        self.assertTrue(out.startswith("\x1b[38;5;108m[PONY]\x1b[0m  \x1b[38;5;80m[WF "), repr(out))
 
     def test_our_part_is_still_cleaned_and_ascii_when_needed(self):
         self.e.prompt("/wf on")
@@ -1974,7 +1982,7 @@ class TestStatusline212(unittest.TestCase):
         s["level"] = "standard\x1b]0;pwned\x07"                    # a tampered state file
         st.save(str(self.e.repo), s)
         out = self.chain("printf 'PONY'", {"WF_ASCII": "1"})
-        self.assertEqual(out, "PONY [WF no phase yet | standard]")
+        self.assertEqual(out, "PONY  \x1b[38;5;80m[WF no phase yet | standard]\x1b[0m")
 
     def test_badge_reads_as_words(self):
         e = self.e
@@ -1988,4 +1996,19 @@ class TestStatusline212(unittest.TestCase):
         line = wf.statusline({"cwd": str(e.repo)}, e.env)
         self.assertRegex(line, r"^\[WF P5 Adversarial Review · gate \d+% · 2 approved · 3 skipped · standard\]$")
         self.assertFalse(set(line) & set("✓⚠⏸"))
+
+    def test_badge_is_turquoise_and_spaced_apart(self):
+        self.e.prompt("/wf on")
+        out = self.chain("printf 'PONY'")
+        self.assertEqual(out, "PONY  \x1b[38;5;80m[WF no phase yet · standard]\x1b[0m")
+
+    def test_colour_can_be_changed_or_turned_off(self):
+        self.e.prompt("/wf on")
+        badge = "[WF no phase yet · standard]"
+        cases = {"WF_COLOR": {"45": f"\x1b[38;5;45m{badge}\x1b[0m", "off": badge, "300": f"\x1b[38;5;80m{badge}\x1b[0m",
+                              "x;31m": f"\x1b[38;5;80m{badge}\x1b[0m"},
+                 "NO_COLOR": {"1": badge}}
+        for var, values in cases.items():
+            for value, want in values.items():
+                self.assertEqual(self.chain("true", {var: value}), want, (var, value))
 
