@@ -3,7 +3,7 @@
 A single, battle-tested process file for using an AI coding agent (Claude Code, Cursor, etc.) on real
 features without shipping self-inflicted outages or security holes.
 
-**Version:** v2.1.0 — gates that work in any language: spec/plan items are checked by exact quotes, gates are approved only with `/wf ok`, Claude can't move phases on its own, safe terminal output, and the rules summary goes to Claude once per session with no extra file reads. Previous: [v2.0.2](https://github.com/larya-dot-eu/claude-workflows/releases/tag/v2.0.2) — see [Releases](https://github.com/larya-dot-eu/claude-workflows/releases) for changelog.
+**Version:** v2.1.1 — fixes from the v2.1.0 review: `n/a` items are listed on the gate line instead of counted as quoted, a quoted passage is never mistaken for `n/a`/`missing`, and the state guard and read-only commands are tighter. Previous release: [v2.0.1](https://github.com/larya-dot-eu/claude-workflows/releases/tag/v2.0.1) — see [Releases](https://github.com/larya-dot-eu/claude-workflows/releases) for changelog.
 
 **→ [`Claude-Workflows-Best-Practices.md`](./Claude-Workflows-Best-Practices.md)**
 
@@ -236,8 +236,10 @@ WF ▸ ⚠ Gate P7 marker at Phase 3 not applied — phases move one at a time, 
   (`- interfaces: "<exact sentence>"`); the plugin searches the newest spec/plan file for that text
   (formatting, line wraps and typographic quotes don't matter; the passage must be at least 15
   characters and different for each item). The line then says what failed (`quote not in file`,
-  `no quote`, `quote too short`, `same quote as another item`) and how many items are only
-  *claimed, not checked*. It measures **coverage, not quality** — the line ends with
+  `no quote`, `quote too short`, `same quote as another item`), which items were marked `n/a`
+  (`n/a: …` — they count, but nothing was checked), and how many items are only
+  *claimed, not checked*. A value that starts with a quotation mark is always a quote, never the
+  `n/a` or `missing` token. It measures **coverage, not quality** — the line ends with
   *content not judged — your review*, because reading the gate is still your job.
 - **Timeline** — `/wf status` shows `P0 ✓ · P1 ✓ · P2 ⚠ skipped · P3 70% (gate)`. A phase left without an
   approved gate (you jumping ahead with `/wf <n>`) is marked *skipped*, so the timeline always shows which

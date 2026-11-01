@@ -361,7 +361,9 @@ def skin_context(state, env, cwd, with_phase=True, budget=LIMIT, fresh=False):
         if state.get("injected") == ph and has_context(state) and not fresh:
             head += f" The Phase {ph} rules sent earlier in this session still apply."
         else:
-            section = phase_context(ph, env, cwd, budget - len(head) - 2, allow_read=False)
+            # Without a session id the section can't be held for the next message (see on_prompt):
+            # then the old fallback, an exact line range to read, is the only way it reaches Claude.
+            section = phase_context(ph, env, cwd, budget - len(head) - 2, allow_read=not SESSION["id"])
             if section is not None:
                 head += "\n\n" + section
                 state["injected"] = ph
@@ -865,6 +867,7 @@ QUOTE_PAIRS = (('"', '"'), ("\u201c", "\u201d"), ("\u201e", "\u201c"), ("\u201e"
                ("\u00ab", "\u00bb"), ("\u00bb", "\u00ab"), ("\u2039", "\u203a"), ("\u300c", "\u300d"),
                ("\u300e", "\u300f"), ("`", "`"))
 QUOTE_RE = re.compile("|".join(re.escape(a) + "(.+?)" + re.escape(b) for a, b in QUOTE_PAIRS))
+QUOTE_OPENERS = {a for a, _ in QUOTE_PAIRS}
 MIN_QUOTE = 15   # characters, not counting spaces: long enough to point at real content
 
 _CHAR_MAP = str.maketrans({**{c: "-" for c in "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"},
@@ -918,15 +921,17 @@ def score(n, message, file_text=None, items=None):
     items = CHECKS.get(n, []) if items is None else items
     lines = checklist_lines(message)
     norm_file = norm_text(file_text) if file_text is not None else None
-    found, missing, unverified, claimed, reasons, listed, used = 0, [], [], [], {}, 0, set()
+    found, missing, unverified, claimed, na, reasons, listed, used = 0, [], [], [], [], {}, 0, set()
     for label, is_file in items:
         value = lines.get(label.lower())
         if value is not None:
             listed += 1
-        if not value or MISSING.match(value):
+        quoted = (value or "").lstrip(" *_")[:1] in QUOTE_OPENERS   # a quote is text, never a token
+        if not value or (not quoted and MISSING.match(value)):
             missing.append(label)
-        elif NA.match(value):
+        elif not quoted and NA.match(value):
             found += 1
+            na.append(label)
         elif is_file and norm_file is not None:
             why, key = check_quotes(value, norm_file, used)
             if key:
@@ -939,7 +944,7 @@ def score(n, message, file_text=None, items=None):
             found += 1
             claimed.append(label)
     return {"found": found, "total": len(items), "missing": missing, "unverified": unverified,
-            "reasons": reasons, "claimed": claimed, "listed": listed}
+            "reasons": reasons, "claimed": claimed, "na": na, "listed": listed}
 
 
 def file_sha(p):
@@ -1015,6 +1020,8 @@ def gate_line(n, entry):
         by_reason.setdefault((entry.get("reasons") or {}).get(label, "not checked"), []).append(label)
     for why, labels in by_reason.items():
         tail.append(f"{clip(why)}: " + ", ".join(clip(l) for l in labels))
+    if entry.get("na"):
+        tail.append("n/a: " + ", ".join(clip(l) for l in entry["na"]))
     if entry.get("file_note"):
         tail.append(clip(entry["file_note"], 2 * ITEM_MAX))
     elif entry.get("file"):
@@ -1123,7 +1130,7 @@ def engine_on_saved(store, cwd):
     return store.load(cwd)["enabled"] == "on"
 
 
-SCORE_KEYS = ("found", "total", "missing", "unverified", "reasons", "claimed", "listed", "file", "file_note",
+SCORE_KEYS = ("found", "total", "missing", "unverified", "reasons", "claimed", "na", "listed", "file", "file_note",
               "checked")
 
 
@@ -1176,7 +1183,7 @@ def on_stop(payload, env, store, cwd):
             r.update(file=doc["name"],
                      file_note=f"{doc['name']} {doc['why']} — quotes not checked" if doc.get("why") else None,
                      checked=sum(1 for l, f in items if f and l not in r["missing"] + r["unverified"]
-                                 + r["claimed"]) if doc["text"] is not None else 0)
+                                 + r["claimed"] + r["na"]) if doc["text"] is not None else 0)
     tl = state.setdefault("timeline", {})
     prev = tl.get(str(gate), {})
     if not r["listed"] and prev.get("listed"):
@@ -1200,7 +1207,8 @@ def on_stop(payload, env, store, cwd):
         now = file_sha(spec["path"])
         if now is None:
             warn.append(f"⚠ the approved spec {clip(Path(spec['path']).name)} is gone")
-        elif now != spec["sha"]:
+        elif now != spec["sha"] and now != spec.get("warned_sha"):   # once per change, not at every gate
+            spec["warned_sha"] = now
             warn.append(f"⚠ spec {clip(Path(spec['path']).name)} changed after its Phase 3 approval — re-read it")
     out = output("Stop", None, gate_line(gate, entry) + "".join("\n" + w for w in warn))
     body = (payload.get("last_assistant_message") or "").rsplit("[[gate", 1)[0].rstrip()
@@ -1343,7 +1351,7 @@ SKILL_SHOW = {
 STATE_WRITERS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 
 
-def touches_state(payload, env):
+def touches_state(payload, env, cwd=None):
     """True when a tool call names the plugin's own data folder (phase state, approvals, config).
     Best effort for shell commands: it looks for the folder's path in the command text."""
     d = data_dir(env)
@@ -1354,7 +1362,10 @@ def touches_state(payload, env):
     if payload.get("tool_name") in STATE_WRITERS:
         target = ti.get("file_path") or ti.get("notebook_path") or ""
         try:
-            target = str(Path(os.path.expanduser(target)).resolve())
+            t = Path(os.path.expanduser(target))
+            if not t.is_absolute():   # relative to the session's folder, not this hook process's
+                t = Path(cwd or payload.get("cwd") or os.getcwd()) / t
+            target = str(t.resolve())
         except (OSError, RuntimeError):
             pass
         return any(target == n or target.startswith(n.rstrip("/") + "/") for n in names)
@@ -1363,7 +1374,7 @@ def touches_state(payload, env):
 
 
 def state_guard(payload, env, store, cwd):
-    if not touches_state(payload, env):
+    if not touches_state(payload, env, cwd):
         return None
     return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask",
                                    "permissionDecisionReason":
@@ -1537,6 +1548,9 @@ def install_statusline(env):
 
 def on_prompt(payload, env, store, cwd):
     out = _on_prompt(payload, env, store, cwd)
+    parsed = parse_command(payload.get("prompt", ""))
+    if parsed and parsed[0] in READ_ONLY_COMMANDS:
+        return out   # these run without the state lock (see _handle): they must never write
     state = store.load(cwd)
     if engine_on(state) and snapshot_rules(state, env, cwd):
         store.save(cwd, state)

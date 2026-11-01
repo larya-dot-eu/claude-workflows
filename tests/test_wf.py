@@ -1793,6 +1793,10 @@ class TestGoldenGateLines(unittest.TestCase):
              " · no quote: assumptions · no spec file changed since this feature started — quotes not checked"
              " · 1 claimed, not checked · content not judged — your review · /wf ok to approve"),
         ]
+        cases.append((dict(base, na=["reuse"], unverified=["assumptions"], checked=7),
+                      "Gate P3 reached · checklist 7/10 (70%) · missing: expected scale · no quote: assumptions"
+                      " · n/a: reuse · 7 quoted in s.md · 1 claimed, not checked"
+                      " · content not judged — your review · /wf ok to approve"))
         for entry, want in cases:
             self.assertEqual(wf.gate_line(3, entry), want)
 
@@ -1873,4 +1877,71 @@ class TestContextOncePerSession(unittest.TestCase):
         t = self.p("/wf ok")
         self.assertIn("## Phase 4", t)
         self.assertNotIn("Prime rule", t)
+
+
+class TestReviewFindings211(EngineCase):
+    """Fixes from the v2.1.0 review."""
+
+    def test_na_items_are_listed_not_counted_as_quoted(self):          # 1
+        d = self.e.repo / "docs/superpowers/specs"
+        self.e.prompt("/wf 3")
+        d.mkdir(parents=True)
+        (d / "s.md").write_text(QUOTE_SPEC)
+        msg = "\n".join(f"- {l}: n/a — reason" if f else f"- {l}: done" for l, f in wf.CHECKS[3])
+        line = shown(self.stop(msg + "\n[[gate P3]]"))
+        self.assertIn("0 quoted in s.md", line)
+        self.assertIn("n/a: " + ", ".join(file_labels(3)[:2]), line)
+
+    def test_tokens_are_never_read_inside_a_quote(self):              # 2
+        spec = "missing values are rejected with error 422 always.\nna " + gibberish(5) + "\n"
+        items = [("a", True), ("b", True), ("c", True)]
+        na_quote = spec.splitlines()[1][:40]
+        msg = ('- a: "missing values are rejected with error 422"\n'
+               f'- b: "{na_quote}"\n- c: «missing values are not in this file at all»\n')
+        r = wf.score(3, msg, spec, items)
+        self.assertEqual((r["missing"], r["na"]), ([], []))
+        self.assertEqual(r["reasons"], {"c": "quote not in file"})
+        r = wf.score(3, "- a: missing\n- b: n/a — reason\n- c: **missing**", spec, items)
+        self.assertEqual((r["missing"], r["na"]), (["a", "c"], ["b"]))
+
+    def test_read_only_commands_never_write_state(self):              # 3
+        self.e.prompt("/wf 3")
+        self.stop("x\n[[gate P7]]")                                     # leaves a notice for Claude
+        st = wf.Store(self.e.env).resolve(str(self.e.repo))
+        before = st.read_bytes()
+        for cmd in ("/wf status", "/wf help", "/wf help gate"):
+            self.e.prompt(cmd)
+            self.assertEqual(st.read_bytes(), before, cmd)
+        self.assertIn("did not apply it", ctx(self.e.prompt("go on")))   # the notice is still delivered
+
+    def test_relative_paths_into_the_state_folder_are_guarded(self):  # 4
+        rel = os.path.relpath(str(self.e.data / "state" / "x.json"), str(self.e.repo))
+        out = self.e.run("PreToolUse", tool_name="Write", tool_input={"file_path": rel})
+        self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "ask")
+        self.assertIsNone(self.e.run("PreToolUse", tool_name="Write", tool_input={"file_path": "src/a.py"}))
+
+    def test_without_a_session_id_long_phases_still_reach_claude(self):  # 5
+        e = Env()
+        try:
+            e.run("UserPromptSubmit", prompt="/wf on", session_id=None)
+            t = ctx(e.run("UserPromptSubmit", prompt="/wf 10", session_id=None))
+            self.assertRegex(t, r"## Phase 10 — Deployment|lines \d+–\d+")
+            self.assertNotIn("come with the user's next message", t)
+        finally:
+            e.close()
+
+    def test_changed_spec_is_flagged_once_per_change(self):           # 6
+        d = self.e.repo / "docs/superpowers/specs"
+        self.e.prompt("/wf 3")
+        d.mkdir(parents=True)
+        f = d / "s.md"
+        f.write_text(QUOTE_SPEC)
+        self.stop(quoted(3))
+        self.e.prompt("/wf ok")
+        f.write_text(QUOTE_SPEC + "\nedit one")
+        warn = "changed after its Phase 3 approval"
+        self.assertIn(warn, shown(self.stop("plan\n[[gate P4]]")))
+        self.assertNotIn(warn, shown(self.stop("plan again\n[[gate P4]]")))   # same change: said once
+        f.write_text(QUOTE_SPEC + "\nedit two")
+        self.assertIn(warn, shown(self.stop("plan\n[[gate P4]]")))          # a new change: said again
 
