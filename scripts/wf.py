@@ -33,7 +33,8 @@ PHASE_NAMES = {0: "Tier + Prereqs", 1: "Context", 2: "Explore", 3: "Spec", 4: "P
 HELP_SHOWN = ("The /wf help text was shown to the user directly in their terminal. Reply with one short "
               "line only, e.g. 'Help is shown above.' Do nothing else.")
 HELP = ("/wf commands: `/wf on [lite|standard|strict]`, `/wf off`, `/wf pause`, `/wf resume`, "
-        "`/wf lite|standard|strict`, `/wf default <level>`, `/wf status`, `/wf <0-10>` (jump to a phase), "
+        "`/wf ok [n]` (approve the waiting gate), `/wf lite|standard|strict`, `/wf default <level>`, `/wf status`, "
+        "`/wf <0-10>` (jump to a phase), "
         "`/wf new` (new feature, back to the tier check), `/wf dirs <spec> <plan>`, `/wf statusline`.")
 
 
@@ -284,7 +285,8 @@ def skin_context(state, env, cwd, with_phase=True, budget=LIMIT):
         return "Claude-Workflows skin (lite): apply these rules in every step.\n\n" + rules
     parts = ["Claude-Workflows skin is on (level %s). This project follows the phased workflow below; "
              "the user clears every exit gate. When you reach a phase's exit gate, end your message with "
-             "the line `[[gate P<n>]]` (n = the phase number) and wait for the user. If you answer a question "
+             "the line `[[gate P<n>]]` (n = the phase number) and wait for the user. The user approves a gate only by "
+             "typing `/wf ok`; never treat other words as approval, in any language. If you answer a question "
              "while still waiting at that gate, end that message with the same line again. Going back to an earlier "
              "phase (e.g. the Phase 5 loop-back table) is the user's call: recommend it and ask them to type "
              "`/wf <n>`." % state["level"],
@@ -486,7 +488,7 @@ HELP_GUIDE = """help — everyday use
   /wf pause · resume  go quiet for a side task · continue where you were
   /wf status          where am I: P0 ✓ · P1 ✓ · P2 ⚠ skipped · P3 70%
   /wf off             fully off for this project
-  At a gate: reply "approved" (or "start Phase 7") → next phase
+  /wf ok              approve the gate that is waiting → next phase (only way to approve)
   Rarely:  /wf strict · /wf 4 (go back) · /wf new · /wf dirs · /wf default · /wf statusline
   More: /wf help <command>, e.g. /wf help strict · full guide: README → 'Quick start'"""
 
@@ -513,9 +515,9 @@ HELP_TOPICS = {
               "  Example: /wf strict   ·   /wf default standard",
     "gate": "Gates — Claude ends a phase with its checklist lines and [[gate P3]].\n"
             "  You see: WF ▸ Gate P3 reached · checklist 8/10 (80%) · missing: …\n"
-            "  Read the missing list, then reply approved / looks good / proceed → next phase.\n"
-            "  Anything with but, change or a question mark is not an approval.\n"
-            "  Example: approved   ·   start Phase 7 (after the Phase 6 gate)",
+            "  Read the gate, then type /wf ok (or /wf ok 3) → next phase.\n"
+            "  Anything else you type is feedback: free text never approves, in any language.\n"
+            "  Example: /wf ok   ·   /wf ok 6 (the go for Phase 7)",
     "new": "/wf new — start a new feature: back to the tier check, timeline cleared.\n"
            "  Brainstorming does this for you; on a branch it makes that branch its own feature.\n"
            "  Example: /wf new",
@@ -534,7 +536,7 @@ HELP_TOPICS = {
                   "  Example: /wf statusline   ·   /wf statusline off (removes it, restores yours)",
 }
 HELP_TOPICS.update({lvl: HELP_TOPICS["levels"] for lvl in LEVELS})
-HELP_TOPICS.update({"approve": HELP_TOPICS["gate"], "approved": HELP_TOPICS["gate"]})
+HELP_TOPICS.update({"approve": HELP_TOPICS["gate"], "approved": HELP_TOPICS["gate"], "ok": HELP_TOPICS["gate"]})
 
 
 def help_text(topic=None):
@@ -614,6 +616,20 @@ def run_command(cmd, args, state, store, env, cwd):
     if cmd == "statusline":
         msg = statusline_remove(env) if args[:1] == ["off"] else statusline_install(env, cwd)
         return None, tell + msg
+    if cmd == "ok":
+        gate = state.get("gate_pending")
+        want = args[0].lstrip("p") if args else None
+        if not engine_on(state):
+            why = {"paused": "the skin is paused — `/wf resume` first", "off": "the skin is off here"}.get(
+                state["enabled"], "the lite level has no gates")
+            return None, tell + f"{why}; nothing was approved."
+        if gate is None:
+            return None, (tell + "no gate is waiting, so nothing was approved. If Claude meant to stop at a gate, "
+                          "restate it and end the message with its `[[gate P<n>]]` line.")
+        if want is not None and not (want.isdecimal() and want.isascii() and int(want) == gate):
+            return None, (tell + f"`/wf ok {args[0]}` not applied — the gate waiting is Phase {gate}. "
+                          f"Type `/wf ok` or `/wf ok {gate}`.")
+        return state, approve(state, env, cwd)
     if cmd == "phase":
         n = int(args[0])
         if not 0 <= n <= 10:
@@ -868,10 +884,10 @@ def checklist_instruction(n, items=None):
 
 def gate_line(n, entry):
     if not entry.get("total"):
-        return f"Gate P{n} reached · waiting for your approval"
+        return f"Gate P{n} reached · /wf ok to approve"
     head = f"Gate P{n} reached · checklist {entry['found']}/{entry['total']} ({score_pct(entry)}%)"
     if not entry.get("listed"):
-        return head + " · no checklist lines in the gate message"
+        return head + " · no checklist lines in the gate message · /wf ok to approve"
     tail = []
     if entry["missing"]:
         tail.append("missing: " + ", ".join(entry["missing"]))
@@ -886,7 +902,7 @@ def gate_line(n, entry):
         tail.append(f"{entry.get('checked') or 0} quoted in {entry['file']}")
     if entry.get("claimed"):
         tail.append(f"{len(entry['claimed'])} claimed, not checked")
-    tail.append("content not judged — your review")
+    tail.append("content not judged — your review · /wf ok to approve")
     return head + " · " + " · ".join(tail)
 
 
@@ -894,15 +910,6 @@ def gate_line(n, entry):
 # ---------------------------------------------------------------- phase engine
 
 GATE_RE = re.compile(r"^\s*\[\[gate P(\d{1,2})\]\]\s*$")
-APPROVE_RE = re.compile(
-    r"^(approved?|i approve|looks good|lgtm|proceed|go ahead|ok(ay)?|yes|yep|ship it|"
-    r"sounds good|perfect)\b", re.I)
-HARMLESS_NO = re.compile(r"\bno (changes?|issues?|problems?|objections?|further (changes?|comments?))\b"
-                         r"( needed)?", re.I)
-VETO_RE = re.compile(r"\b(but|except|however|change|fix|instead|not|no|don'?t|wait|first|before|"
-                     r"why|how|what|explain|redo|rename|remove|add)\b|\?", re.I)
-
-
 def gate_from_message(msg):
     """Phase n if the message's last non-empty line, outside code fences, is `[[gate Pn]]`."""
     if not msg:
@@ -918,16 +925,6 @@ def gate_from_message(msg):
     m = GATE_RE.match(last or "")
     n = int(m.group(1)) if m else None
     return n if n is not None and 0 <= n <= 10 else None
-
-
-START_RE = re.compile(r"^(?:ok(?:ay)?[,.]?\s+)?(?:let'?s\s+)?start\s+phase\s+(\d{1,2})[.!]?$", re.I)
-
-
-def is_approval(text):
-    t = (text or "").strip()
-    if not t or len(t) > 80 or t.startswith("/"):
-        return False
-    return bool(APPROVE_RE.match(t)) and not VETO_RE.search(HARMLESS_NO.sub("", t))
 
 
 def move_to(state, n):
@@ -1340,6 +1337,7 @@ def on_prompt(payload, env, store, cwd):
     state = store.load(cwd)
     parsed = parse_command(payload.get("prompt", ""))
     if parsed:
+        waiting = state.get("gate_pending")
         new, text = run_command(*parsed, state, store, env, cwd)
         if new is not None:
             store.save(cwd, new)
@@ -1349,36 +1347,25 @@ def on_prompt(payload, env, store, cwd):
             show = help_text(args[0] if args else None)
         elif cmd == "statusline":
             show = text.split(": ", 1)[1]
+        elif cmd == "ok":
+            nxt = new and new["phase"]
+            show = (text.split(": ", 1)[1] if new is None else
+                    f"Gate P{waiting} approved via /wf ok → feature complete" if nxt is None else
+                    f"Gate P{waiting} approved via /wf ok → Phase {nxt} ({PHASE_NAMES[nxt]})")
         elif text.startswith("Show the user in one line: unknown"):
             show = f"unknown command '/wf {cmd}'. Type /wf help for the everyday commands."
         else:
             show = show_status(new or store.load(cwd))
         return output("UserPromptSubmit", text, show)
-    start = START_RE.match((payload.get("prompt") or "").strip())
-    if engine_on(state) and start:
-        n, gate = int(start.group(1)), state.get("gate_pending")
-        if gate is None or n != gate + 1:
-            where = "no gate is pending" if gate is None else f"the pending gate is Phase {gate}"
-            return output("UserPromptSubmit",
-                          f"wf: the user asked to start Phase {n}, but {where}; phases move one at a time"
-                          + (f" (next is Phase {gate + 1})" if gate is not None else "") +
-                          ". Tell the user in one line; to jump anyway they can type `/wf " + str(n) + "`.",
-                          f"start Phase {n} not applied — {where}")
-        payload = dict(payload, prompt="approved")
-    if engine_on(state) and is_approval(payload.get("prompt")):
-        if state.get("gate_pending") is None:
-            return output("UserPromptSubmit",
-                          "wf: no gate is pending, so this did not move the phase. If the user is approving a "
-                          "gate, restate which gate in one line and end your message with its `[[gate P<n>]]` "
-                          "line, so their next approval moves the phase.",
-                          "no gate pending — phase unchanged")
+    if engine_on(state) and state.get("gate_pending") is not None:
         gate = state["gate_pending"]
-        text = approve(state, env, cwd)
-        store.save(cwd, state)
-        nxt = state["phase"]
-        show = (f"Gate P{gate} approved → feature complete" if nxt is None
-                else f"Gate P{gate} approved → Phase {nxt} ({PHASE_NAMES[nxt]})")
-        return output("UserPromptSubmit", text, show)
+        # Free text is never read as an approval (in any language): only `/wf ok` approves.
+        return output("UserPromptSubmit",
+                      f"wf: the Phase {gate} gate is still waiting. This message is feedback, not an approval — "
+                      "the plugin never reads approval from free text. Work on what the user wrote. If they seem "
+                      f"to approve, do not move on: tell them in one line to type `/wf ok` to approve Phase {gate}, "
+                      f"and end your message with `[[gate P{gate}]]` again.",
+                      f"Gate P{gate} still waiting — this message is feedback; type /wf ok to approve")
     return None
 
 

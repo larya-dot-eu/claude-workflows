@@ -280,20 +280,6 @@ class TestGateMarker(unittest.TestCase):
         self.assertIsNone(wf.gate_from_message(None))
 
 
-class TestApproval(unittest.TestCase):
-    def test_approvals(self):
-        for t in ["approved", "Approved.", "looks good", "LGTM!", "proceed", "ok, proceed",
-                  "yes", "go ahead", "approve", "sounds good, continue", "ok"]:
-            self.assertTrue(wf.is_approval(t), t)
-
-    def test_not_approvals(self):
-        for t in ["looks good but change the title", "approved except step 3", "no",
-                  "why did you pick sqlite?", "wait", "proceed, but first fix the typo",
-                  "ok go run the tests and tell me what fails, then we redo the whole plan from scratch please",
-                  "can you explain step 2", "/wf on", "don't proceed", "not yet"]:
-            self.assertFalse(wf.is_approval(t), t)
-
-
 class EngineCase(unittest.TestCase):
     def setUp(self):
         self.e = Env()
@@ -314,7 +300,7 @@ class TestPhaseEngine(EngineCase):
         self.e.prompt("/wf 3")
         self.assertNotIn("decision", self.stop("Here is the spec.\n[[gate P3]]") or {})
         self.assertEqual(self.e.state()["gate_pending"], 3)
-        out = self.e.prompt("approved")
+        out = self.e.prompt("/wf ok")
         s = self.e.state()
         self.assertEqual((s["phase"], s["gate_pending"]), (4, None))
         self.assertIn("## Phase 4", ctx(out))
@@ -322,7 +308,7 @@ class TestPhaseEngine(EngineCase):
 
     def test_approval_without_pending_gate_does_nothing(self):
         self.e.prompt("/wf 3")
-        self.assertIn("no gate", ctx(self.e.prompt("approved")))
+        self.assertIn("no gate", ctx(self.e.prompt("/wf ok")))
         self.assertEqual(self.e.state()["phase"], 3)
 
     def test_turn_without_marker_clears_pending_gate(self):
@@ -331,25 +317,26 @@ class TestPhaseEngine(EngineCase):
         self.e.prompt("why sqlite?")
         self.stop("Because ... (answer to side question)")
         self.assertIsNone(self.e.state()["gate_pending"])
-        self.assertIn("no gate", ctx(self.e.prompt("ok")))
+        self.assertIn("no gate", shown(self.e.prompt("/wf ok")))
         self.assertEqual(self.e.state()["phase"], 3)
 
     def test_non_approval_keeps_phase(self):
         self.e.prompt("/wf 3")
         self.stop("spec\n[[gate P3]]")
-        self.assertIsNone(self.e.prompt("looks good but rename the table"))
+        out = self.e.prompt("looks good but rename the table")
         self.assertEqual(self.e.state()["phase"], 3)
+        self.assertIn("feedback", shown(out))
 
     def test_marker_moves_phase_to_marker_phase(self):
         self.e.prompt("/wf 0")
         self.stop("Context summary...\n[[gate P1]]")
-        self.e.prompt("approved")
+        self.e.prompt("/wf ok")
         self.assertEqual(self.e.state()["phase"], 2)
 
     def test_final_gate_completes_feature(self):
         self.e.prompt("/wf 10")
         self.stop("Deployed, healthy.\n[[gate P10]]")
-        out = self.e.prompt("approved")
+        out = self.e.prompt("/wf ok")
         s = self.e.state()
         self.assertIsNone(s["phase"])
         self.assertEqual(s["enabled"], "on")
@@ -368,7 +355,8 @@ class TestPhaseEngine(EngineCase):
         self.e.prompt("/wf 3")
         self.stop("x\n[[gate P3]]")
         self.e.prompt("/wf pause")
-        self.assertIsNone(self.e.prompt("approved"))
+        self.assertIn("paused", shown(self.e.prompt("/wf ok")))
+        self.assertEqual(self.e.state()["phase"], 3)
 
 
 class TestSkillMapping(EngineCase):
@@ -584,19 +572,13 @@ class TestReviewFixes(unittest.TestCase):
     def test_approval_without_gate_gets_a_hint_not_silence(self):
         self.e.prompt("/wf on")
         self.e.prompt("/wf 3")
-        out = self.e.prompt("approved")
+        out = self.e.prompt("/wf ok")
         self.assertIn("no gate", ctx(out).lower())
         self.assertEqual(self.e.state()["phase"], 3)
 
     def test_skin_tells_claude_to_repeat_marker_while_waiting(self):
         out = self.e.prompt("/wf on")
         self.assertIn("still waiting", ctx(out))
-
-    def test_approval_word_edge_cases(self):
-        for t in ["continue", "great", "good"]:
-            self.assertFalse(wf.is_approval(t), t)
-        self.assertTrue(wf.is_approval("yes, no changes needed"))
-        self.assertTrue(wf.is_approval("looks good, no issues"))
 
     def test_unicode_digit_is_not_a_phase(self):
         self.assertEqual(wf.parse_command("/wf ²")[0], "²")
@@ -618,7 +600,7 @@ class TestReviewFixes(unittest.TestCase):
         self.e.prompt("/wf on")
         self.e.prompt("/wf 10")
         self.e.run("Stop", last_assistant_message="done\n[[gate P10]]")
-        self.e.prompt("approved")
+        self.e.prompt("/wf ok")
         self.e.prompt("/wf off")
         self.e.prompt("/wf on")
         self.assertIsNone(self.e.state()["phase"])
@@ -656,8 +638,8 @@ class TestVisibleLines(EngineCase):
         self.e.prompt("/wf 3")
         out = self.stop("spec\n[[gate P3]]")
         self.assertIn("Gate P3", shown(out))
-        out = self.e.prompt("approved")
-        self.assertIn("Gate P3 approved → Phase 4", shown(out))
+        out = self.e.prompt("/wf ok")
+        self.assertIn("Gate P3 approved via /wf ok → Phase 4", shown(out))
 
     def test_skill_events_are_shown(self):
         out = self.skill("superpowers:brainstorming")
@@ -685,7 +667,7 @@ class TestVisibleLines(EngineCase):
 class TestTimeline(EngineCase):
     def walk(self, n):
         self.stop(f"x\n[[gate P{n}]]")
-        self.e.prompt("approved")
+        self.e.prompt("/wf ok")
 
     def marks(self):
         return wf.timeline_marks(self.e.state())
@@ -904,7 +886,7 @@ class TestChecklist(EngineCase):
         pct = wf.score_pct(self.e.state()["timeline"]["3"])
         self.assertEqual(pct, 80)
         self.assertRegex(wf.statusline({"cwd": str(self.e.repo)}, self.e.env), r"\[WF P3 80%")
-        self.e.prompt("approved")
+        self.e.prompt("/wf ok")
         self.assertIn("P3 ✓ 80%", shown(self.e.prompt("/wf status")))
 
 
@@ -945,7 +927,7 @@ class TestStrictNudge(EngineCase):
         self.e.prompt("/wf strict")
         self.e.prompt("/wf 3")
         self.gate3()
-        self.e.prompt("approved")
+        self.e.prompt("/wf ok")
         self.e.prompt("/wf 3")
         self.assertEqual(self.gate3().get("decision"), "block")
 
@@ -955,7 +937,7 @@ class TestReview2Fixes(EngineCase):
         self.e.prompt("/wf strict")
         self.e.prompt("/wf 10")
         self.stop("deployed\n[[gate P10]]")
-        self.e.prompt("approved")
+        self.e.prompt("/wf ok")
         self.e.prompt("/wf 0")
         self.assertEqual(self.e.state()["timeline"], {})
 
@@ -1080,7 +1062,7 @@ class TestEarlierGateIsARecap(EngineCase):
         self.e.prompt("/wf new")
         for n in range(0, 6):
             self.stop(f"x\n[[gate P{n}]]")
-            self.e.prompt("approved")
+            self.e.prompt("/wf ok")
         before = dict(self.e.state()["timeline"])
         out = self.stop("Recap of the plan.\n[[gate P4]]")
         s = self.e.state()
@@ -1096,7 +1078,7 @@ class TestEarlierGateIsARecap(EngineCase):
         self.e.prompt("/wf new")
         for n in range(0, 6):
             self.stop(f"x\n[[gate P{n}]]")
-            self.e.prompt("approved")
+            self.e.prompt("/wf ok")
         self.e.prompt("/wf 3")
         self.assertEqual(self.e.state()["phase"], 3)
         self.assertEqual(wf.timeline_marks(self.e.state()), "✓✓✓")
@@ -1154,20 +1136,50 @@ class TestFollowBranch(unittest.TestCase):
         self.assertEqual(self.e.state()["enabled"], "off")
 
 
-class TestStartPhase(EngineCase):
-    def test_start_phase_7_approves_the_p6_gate(self):
-        self.e.prompt("/wf 6")
-        self.stop("TDD plan\n[[gate P6]]")
-        out = self.e.prompt("start Phase 7")
-        self.assertEqual(self.e.state()["phase"], 7)
-        self.assertIn("Gate P6 approved → Phase 7", shown(out))
-
-    def test_start_phase_must_be_the_next_phase(self):
+class TestApprovalCommand(EngineCase):
+    def test_free_text_never_approves_in_any_language(self):
         self.e.prompt("/wf 3")
         self.stop("spec\n[[gate P3]]")
-        out = self.e.prompt("start phase 5")
+        for t in ["approved", "yes", "ok", "LGTM", "start Phase 4", "genehmigt", "da, aprob", "sí, adelante",
+                  "va bene", "pode seguir", "ok, ma prima rinomina X"]:
+            out = self.e.prompt(t)
+            self.assertEqual(self.e.state()["phase"], 3, t)
+            self.assertIn("/wf ok", shown(out), t)
+            self.assertIn("not an approval", ctx(out), t)
+
+    def test_wf_ok_approves_the_waiting_gate(self):
+        self.e.prompt("/wf 6")
+        self.stop("TDD plan\n[[gate P6]]")
+        out = self.e.prompt("/wf ok")
+        self.assertEqual(self.e.state()["phase"], 7)
+        self.assertIn("Gate P6 approved via /wf ok → Phase 7", shown(out))
+
+    def test_wf_ok_n_must_name_the_waiting_gate(self):
+        self.e.prompt("/wf 3")
+        self.stop("spec\n[[gate P3]]")
+        for arg in ("4", "p5", "x", "²"):
+            out = self.e.prompt(f"/wf ok {arg}")
+            self.assertEqual(self.e.state()["phase"], 3, arg)
+            self.assertIn("gate waiting is Phase 3", shown(out), arg)
+        self.e.prompt("/wf ok P3")
+        self.assertEqual(self.e.state()["phase"], 4)
+
+    def test_wf_ok_without_a_waiting_gate_changes_nothing(self):
+        self.e.prompt("/wf 3")
+        out = self.e.prompt("/wf ok")
         self.assertEqual(self.e.state()["phase"], 3)
-        self.assertIn("Phase 4", ctx(out))
+        self.assertIn("nothing was approved", shown(out))
+
+    def test_wf_ok_when_skin_is_off_or_paused(self):
+        self.e.prompt("/wf 3")
+        self.stop("spec\n[[gate P3]]")
+        self.e.prompt("/wf pause")
+        self.e.prompt("/wf ok")
+        self.assertEqual(self.e.state()["phase"], 3)
+
+    def test_gate_line_says_how_to_approve(self):
+        self.e.prompt("/wf 2")
+        self.assertIn("/wf ok to approve", shown(self.stop(checklist(2))))
 
     def test_docs_say_p6_approval_is_the_go(self):
         doc = (ROOT / "Claude-Workflows-Best-Practices.md").read_text()
@@ -1292,13 +1304,13 @@ class TestCombinedFirstMessage(EngineCase):
     def test_p0_lines_in_p1_gate_count_for_p0(self):
         self.skill("superpowers:brainstorming")
         self.stop(self.first_message())
-        self.e.prompt("approved")
+        self.e.prompt("/wf ok")
         self.assertEqual(wf.timeline_marks(self.e.state()), "✓✓")
 
     def test_without_p0_lines_p0_is_skipped(self):
         self.skill("superpowers:brainstorming")
         self.stop(self.first_message(with_p0=False))
-        self.e.prompt("approved")
+        self.e.prompt("/wf ok")
         self.assertEqual(wf.timeline_marks(self.e.state()), "⚠✓")
 
     def test_brainstorming_note_allows_one_combined_gate(self):
@@ -1335,7 +1347,7 @@ class TestHelp(unittest.TestCase):
     def test_help_shows_everyday_guide_in_terminal(self):
         out = self.e.prompt("/wf help")
         text = shown(out)
-        for cmd in ("/wf on", "/wf pause", "/wf status", "/wf off", "approved", "/wf help strict"):
+        for cmd in ("/wf on", "/wf pause", "/wf status", "/wf off", "/wf ok", "/wf help strict"):
             self.assertIn(cmd, text)
         self.assertNotIn(text.splitlines()[1], ctx(out))   # the guide is shown, not sent to Claude
 

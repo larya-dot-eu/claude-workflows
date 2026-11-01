@@ -140,10 +140,10 @@ What a feature looks like:
 | `/wf on` | `WF ▸ on · standard · no phase yet` |
 | "Let's add CSV export to reports" | `WF ▸ brainstorming started → Phase 0 (Tier + Prereqs)` |
 | *(Claude summarises the project and the request, ends with its checklist)* | `WF ▸ Gate P1 reached · checklist 8/8 (100%) · all items ✓` |
-| `approved` | `WF ▸ Gate P1 approved → Phase 2 (Explore)` |
+| `/wf ok` | `WF ▸ Gate P1 approved via /wf ok → Phase 2 (Explore)` |
 | *(questions … the spec)* | `WF ▸ Gate P3 reached · checklist 8/10 (80%) · missing: access-control matrix, expected scale · … · content not judged — your review` |
 | "the matrix: only report owners may export" | *(Claude adds it and ends at the gate again)* `· checklist 10/10` |
-| `approved` | `WF ▸ Gate P3 approved → Phase 4 (Plan)` … and so on to Phase 10 |
+| `/wf ok` | `WF ▸ Gate P3 approved via /wf ok → Phase 4 (Plan)` … and so on to Phase 10 |
 | `/wf status` | `P0 ✓ · P1 ✓ · P2 ✓ · P3 ✓ · P4 70% (gate)` |
 
 You never type "read the workflow file" or "now do phase 4" — approving a gate is enough.
@@ -182,6 +182,7 @@ in `.claude/settings.json`, that one wins inside the project — `/wf statusline
 |---|---|
 | `/wf help` · `/wf help <command>` | The everyday commands · one command explained with an example (shown in your terminal only) |
 | `/wf on` · `/wf on strict` | Switch the skin on for this project + branch (default level, or the one you name) |
+| `/wf ok` · `/wf ok 3` | Approve the gate that is waiting (the only way to approve) · approve only if gate 3 is the one waiting |
 | `/wf pause` · `/wf resume` | Go silent but remember the phase · continue where you paused |
 | `/wf off` | Fully off, phase forgotten |
 | `/wf lite` · `/wf standard` · `/wf strict` | Change level (switches on if off) |
@@ -199,10 +200,11 @@ in `.claude/settings.json`, that one wins inside the project — `/wf statusline
 | `strict` | Standard + Phase 5 always by a fresh subagent, Quick tier always confirmed, constraints injected into every subagent, merges blocked before Phase 10. | same + a few lines per subagent |
 
 **How phases move — without you prompting them.** When Claude reaches an exit gate it ends its
-message with `[[gate P3]]`. Reply *approved* / *looks good* / *proceed* and the skin moves exactly one
-phase and hands Claude only that phase's rules. Anything with *but*, *change*, a question mark, etc. is
-not an approval, and a turn that ends without the marker clears the pending gate — a side question
-can never be mistaken for approval. If a marker is ever missed, `/wf 4` puts you back on track. Going *back* (e.g. Phase 5
+message with `[[gate P3]]`. Type `/wf ok` (or `/wf ok 3`, which only approves gate 3) and the skin
+moves exactly one phase and hands Claude only that phase's rules. That command is the only approval:
+the plugin never reads approval from what you write, in any language, so everything else you type at a
+gate is feedback (the terminal says so), and a turn that ends without the marker clears the pending
+gate — a side question can never be mistaken for approval. If a marker is ever missed, `/wf 4` puts you back on track. Going *back* (e.g. Phase 5
 sends the plan back to Phase 4) is always your call: Claude recommends it, you type `/wf 4`; a
 marker for an earlier phase is treated as a recap and never erases your timeline.
 
@@ -210,7 +212,7 @@ marker for an earlier phase is treated as a recap and never erases your timeline
 
 ```
 WF ▸ brainstorming started → Phase 0 (Tier + Prereqs)
-WF ▸ Gate P1 approved → Phase 2 (Explore)
+WF ▸ Gate P1 approved via /wf ok → Phase 2 (Explore)
 WF ▸ Gate P3 reached · checklist 8/10 (80%) · missing: expected scale · quote not in file: reuse · 7 quoted in 2026-11-01-report.md · 1 claimed, not checked · content not judged — your review
 WF ▸ ⚠ writing-plans — spec (Phase 3) is not approved yet
 ```
@@ -280,15 +282,15 @@ Or do it by hand — nothing activates on its own; cloning this repo just gives 
 2. Load the compact file each session — either paste it / reference it manually, or set up the hooks
    below once and it loads automatically in every session of that project.
 3. Tell the agent to follow the workflow for the feature at hand.
-4. Hold the gates: a phase isn't approved until *you* write the confirmation. Don't let it skip ahead.
+4. Hold the gates: a phase isn't approved until *you* type `/wf ok`. Don't let it skip ahead.
 
 Small, bounded changes (a typo, a config tweak, an obvious one-file fix) don't need the full pipeline —
 the workflow's **Task Tiers** section defines a quick tier that skips the planning phases but never the
 deploy gates.
 
-## Holding a gate — what to check before you write "approved"
+## Holding a gate — what to check before you type `/wf ok`
 
-The gates only work if you actually read what you're approving. A rubber-stamped "approved" turns the
+The gates only work if you actually read what you're approving. A rubber-stamped `/wf ok` turns the
 whole workflow into ceremony. The minimum look per gate:
 
 - **Phase 1 (context):** is the summary actually *your* project, or a plausible-sounding generic one?
