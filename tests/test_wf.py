@@ -26,6 +26,18 @@ def git_repo(path, branch="feature-x"):
     return path
 
 
+# Letters from several scripts (Latin with diacritics, Greek, Cyrillic, Hiragana, Arabic), taken
+# by code point so the tests hold no words of any language: the plugin must not depend on words.
+SCRIPT_LETTERS = "".join(chr(c) for r in ((0x61, 0x7A), (0xE0, 0xFF), (0x100, 0x17F), (0x3B1, 0x3C9),
+                                          (0x430, 0x44F), (0x3042, 0x3093), (0x627, 0x64A)) for c in range(r[0], r[1] + 1))
+
+
+def gibberish(seed, n=6, letters=SCRIPT_LETTERS):
+    """n made-up words from mixed scripts (deterministic per seed)."""
+    rng = random.Random(seed)
+    return " ".join("".join(rng.choice(letters) for _ in range(rng.randint(3, 8))) for _ in range(n))
+
+
 class Env:
     """A temp repo + temp plugin data dir; runs hook events through wf.handle()."""
 
@@ -298,7 +310,7 @@ class TestTerminalSafety(unittest.TestCase):
 
     def test_ascii_terminal_gets_ascii(self):
         for env in ({"WF_ASCII": "1"}, {"LANG": "de_DE.ISO-8859-1"}, {"LC_ALL": "ro_RO"}):
-            out = wf.for_terminal("WF ▸ Gate P3 · ✓✓⚠ · Größe → 5 — ok", env)
+            out = wf.for_terminal("WF ▸ Gate P3 · ✓✓⚠ · " + gibberish(1, 2) + " → 5 — ok", env)
             out.encode("ascii")
             self.assertIn("WF > Gate P3 | ++! |", out)
         for env in ({"LANG": "de_DE.UTF-8"}, {"LC_ALL": "C.utf8"}, {}):
@@ -315,7 +327,7 @@ class TestTerminalSafety(unittest.TestCase):
                        PYTHONIOENCODING="latin-1")
             for event, payload in (("UserPromptSubmit", {"prompt": "/wf on", "cwd": str(e.repo)}),
                                    ("UserPromptSubmit", {"prompt": "/wf 3", "cwd": str(e.repo)}),
-                                   ("Stop", {"last_assistant_message": "Größe ș 漢字\n[[gate P3]]",
+                                   ("Stop", {"last_assistant_message": gibberish(2) + "\n[[gate P3]]",
                                              "cwd": str(e.repo)})):
                 p = self.run_cli(event, json.dumps(payload, ensure_ascii=False).encode("utf-8"), env)
                 self.assertEqual(p.returncode, 0, p.stderr)
@@ -902,12 +914,12 @@ class TestChecklist(EngineCase):
 
     def test_words_are_never_interpreted(self):
         # The hook reads no language: a free-text value is a claim, reported as "claimed, not checked".
-        for val in ("TBD", "fehlt", "lipsește", "falta", "manca"):
+        for val in ["TBD", "to do"] + [gibberish(i, 1) for i in range(5)]:
             r = wf.score(1, checklist(1, bad=("constraints", val)))
             self.assertIn("constraints", r["claimed"], val)
 
     def test_na_with_reason_counts(self):
-        for val in ("n/a — greenfield, none", "N/A — keine", "NA: niciuna"):
+        for val in ("n/a — greenfield, none", "N/A — " + gibberish(3, 2), "NA: " + gibberish(4, 1)):
             r = wf.score(1, checklist(1, bad=("constraints", val)))
             self.assertEqual(r["missing"], [], val)
 
@@ -928,7 +940,7 @@ class TestChecklist(EngineCase):
     def test_quote_check_ignores_language_and_structure(self):
         # Prose in any script, no headings, no numbering, any symbols: only the quoted text matters.
         rng = random.Random(7)
-        alphabet = "abcdefghijklmnopqrstuvwxyzăâîșțäöüßñçãõéèàìòùαβγδεжзиклмнあいうえおابتث"
+        alphabet = SCRIPT_LETTERS
         for _ in range(20):
             words = ["".join(rng.choice(alphabet) for _ in range(rng.randint(2, 9))) for _ in range(400)]
             text = " ".join(words)
@@ -1257,8 +1269,8 @@ class TestApprovalCommand(EngineCase):
     def test_free_text_never_approves_in_any_language(self):
         self.e.prompt("/wf 3")
         self.stop("spec\n[[gate P3]]")
-        for t in ["approved", "yes", "ok", "LGTM", "start Phase 4", "genehmigt", "da, aprob", "sí, adelante",
-                  "va bene", "pode seguir", "ok, ma prima rinomina X"]:
+        for t in ["approved", "yes", "ok", "LGTM", "start Phase 4", "ok, but rename X first"] + \
+                 [gibberish(i, 2) for i in range(6)]:
             out = self.e.prompt(t)
             self.assertEqual(self.e.state()["phase"], 3, t)
             self.assertIn("/wf ok", shown(out), t)
@@ -1726,7 +1738,7 @@ class TestWholeFeatureAnyLanguage(EngineCase):
 
     def mixed_passages(self, seed):
         rng = random.Random(seed)
-        abc = "aăâbcçdeéèfgğhiîıjklmnñoöpqrsșştțuüvwxyzßαβγδεζηθжзийклмнあいうえおかきくけこابتثجح"
+        abc = SCRIPT_LETTERS
         return [" ".join("".join(rng.choice(abc) for _ in range(rng.randint(3, 8))) for _ in range(6))
                 for _ in range(12)]
 
