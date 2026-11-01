@@ -2,6 +2,7 @@
 import json
 import os
 import random
+import unicodedata
 import re
 import subprocess
 import sys
@@ -259,6 +260,85 @@ class TestCli(unittest.TestCase):
                            input="not json", capture_output=True, text=True)
         self.assertEqual(p.returncode, 0)
         self.assertEqual(p.stdout, "")
+
+
+class TestTerminalSafety(unittest.TestCase):
+    """Everything the user sees is safe to print: no escape sequences, no invisible characters,
+    bounded length, readable on terminals without UTF-8, and errors never silent."""
+
+    HOSTILE = ["\x1b]0;pwned\x07", "\x1b[2J\x1b[H", "\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\",
+               "\u202eevil\u202c", "zero\u200bwidth", "\x9b31m", "a\rb", "\x00\x07\x7f"]
+
+    def test_safe_strips_control_and_invisible_characters(self):
+        for h in self.HOSTILE:
+            out = wf.safe("x " + h + " y")
+            self.assertFalse(any(unicodedata.category(c) in ("Cc", "Cf") for c in out), repr(out))
+
+    def test_lines_are_bounded(self):
+        self.assertLessEqual(len(wf.safe("a" * 5000)), wf.LINE_MAX)
+        self.assertLessEqual(len(wf.clip("b" * 5000)), wf.ITEM_MAX)
+        self.assertEqual(wf.clip("one\ntwo\x1b[2J"), "one two[2J")
+
+    def test_hostile_labels_from_a_project_doc_are_neutralised(self):
+        e = Env()
+        try:
+            labels = ["evil\x1b]0;pwned\x07", "x\u202egnp.exe", "L" * 5000]
+            (e.repo / "Claude-Workflows-Best-Practices.md").write_text(
+                "## Phase 2 — Explore\nrules\n\n**Gate checklist:** " + " · ".join(labels) + "\n\n---\n")
+            e.prompt("/wf on")
+            e.prompt("/wf 2")
+            line = shown(e.run("Stop", last_assistant_message="x\n[[gate P2]]"))
+            self.assertNotIn("\x1b", line)
+            self.assertNotIn("\u202e", line)
+            self.assertLess(len(line), wf.LINE_MAX + 10)
+        finally:
+            e.close()
+
+    def test_ascii_terminal_gets_ascii(self):
+        for env in ({"WF_ASCII": "1"}, {"LANG": "de_DE.ISO-8859-1"}, {"LC_ALL": "ro_RO"}):
+            out = wf.for_terminal("WF ▸ Gate P3 · ✓✓⚠ · Größe → 5 — ok", env)
+            out.encode("ascii")
+            self.assertIn("WF > Gate P3 | ++! |", out)
+        for env in ({"LANG": "de_DE.UTF-8"}, {"LC_ALL": "C.utf8"}, {}):
+            self.assertIn("▸", wf.for_terminal("WF ▸", env))
+
+    def run_cli(self, event, stdin_bytes, extra_env):
+        return subprocess.run([sys.executable, str(ROOT / "scripts" / "wf.py"), event], input=stdin_bytes,
+                              capture_output=True, env=dict(os.environ, **extra_env))
+
+    def test_utf8_input_under_a_c_or_latin1_locale(self):
+        e = Env()
+        try:
+            env = dict(e.env, LC_ALL="C", LANG="C", PYTHONUTF8="0", PYTHONCOERCECLOCALE="0",
+                       PYTHONIOENCODING="latin-1")
+            for event, payload in (("UserPromptSubmit", {"prompt": "/wf on", "cwd": str(e.repo)}),
+                                   ("UserPromptSubmit", {"prompt": "/wf 3", "cwd": str(e.repo)}),
+                                   ("Stop", {"last_assistant_message": "Größe ș 漢字\n[[gate P3]]",
+                                             "cwd": str(e.repo)})):
+                p = self.run_cli(event, json.dumps(payload, ensure_ascii=False).encode("utf-8"), env)
+                self.assertEqual(p.returncode, 0, p.stderr)
+                self.assertTrue(json.loads(p.stdout.decode("utf-8")), event)
+            p = self.run_cli("statusline", json.dumps({"cwd": str(e.repo)}).encode(), env)
+            self.assertTrue(p.stdout.decode("utf-8").startswith("[WF P3"), p.stdout)
+        finally:
+            e.close()
+
+    def test_internal_error_is_shown_once_and_logged(self):
+        e = Env()
+        try:
+            (e.data / "state").mkdir(parents=True)
+            e.prompt("/wf on")
+            p = self.run_cli("UserPromptSubmit", json.dumps({"prompt": 42, "cwd": str(e.repo)}).encode(), e.env)
+            self.assertEqual(p.returncode, 0)
+            msg = json.loads(p.stdout)["systemMessage"]
+            self.assertIn("internal error (UserPromptSubmit)", msg)
+            self.assertIn("Traceback", (e.data / "wf-error.log").read_text())
+        finally:
+            e.close()
+
+    def test_garbage_input_stays_silent(self):
+        p = self.run_cli("Stop", b"\xff\xfe not json", {"CLAUDE_PLUGIN_DATA": tempfile.mkdtemp()})
+        self.assertEqual((p.returncode, p.stdout), (0, b""))
 
 
 if __name__ == "__main__":

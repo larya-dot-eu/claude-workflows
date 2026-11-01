@@ -90,7 +90,8 @@ def every_phase_rules(spine_text):
 
 def _git(cwd, *args):
     try:
-        r = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, timeout=5)
+        r = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=5)
         return r.stdout.strip() if r.returncode == 0 else None
     except Exception:
         return None
@@ -144,7 +145,7 @@ class Store:
         """The state file to use: a branch the skin moved away from redirects to where it went."""
         p = self.path(cwd)
         try:
-            target = json.loads(p.read_text()).get("moved_to")
+            target = json.loads(p.read_text(encoding="utf-8")).get("moved_to")
             if target and Path(target).is_file():
                 return Path(target)
         except Exception:
@@ -159,9 +160,9 @@ class Store:
         if mine.exists():
             return None
         try:
-            ptr = json.loads(self.pointer(cwd).read_text())
+            ptr = json.loads(self.pointer(cwd).read_text(encoding="utf-8"))
             origin = Path(ptr["path"])
-            state = json.loads(origin.read_text())
+            state = json.loads(origin.read_text(encoding="utf-8"))
         except Exception:
             return None
         branch = repo_identity(cwd)[1]
@@ -174,7 +175,7 @@ class Store:
 
     def default_level(self):
         try:
-            lvl = json.loads((data_dir(self.env) / "config.json").read_text()).get("default_level")
+            lvl = json.loads((data_dir(self.env) / "config.json").read_text(encoding="utf-8")).get("default_level")
             return lvl if lvl in LEVELS else DEFAULT_LEVEL
         except Exception:
             return DEFAULT_LEVEL
@@ -183,7 +184,7 @@ class Store:
         p = data_dir(self.env) / "config.json"
         p.parent.mkdir(parents=True, exist_ok=True)
         try:
-            cfg = json.loads(p.read_text())
+            cfg = json.loads(p.read_text(encoding="utf-8"))
         except Exception:
             cfg = {}
         cfg["default_level"] = level
@@ -196,14 +197,14 @@ class Store:
     def peek(self, cwd):
         """The saved state, read without locking, or None when this repo+branch has none."""
         try:
-            return json.loads(self.resolve(cwd).read_text())
+            return json.loads(self.resolve(cwd).read_text(encoding="utf-8"))
         except Exception:
             return None
 
     def load(self, cwd):
         s = self.blank()
         try:
-            s.update(json.loads(self.resolve(cwd).read_text()))
+            s.update(json.loads(self.resolve(cwd).read_text(encoding="utf-8")))
         except Exception:
             pass
         return s
@@ -238,7 +239,7 @@ class Store:
 def _atomic_write(path, obj, indent=1):
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp-")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(obj, f, indent=indent) if not isinstance(obj, bytes) else f.buffer.write(obj)
         os.replace(tmp, path)
     except BaseException:
@@ -249,13 +250,57 @@ def _atomic_write(path, obj, indent=1):
 
 # ---------------------------------------------------------------- output helpers
 
+LINE_MAX = 300      # characters per terminal line the plugin prints
+ITEM_MAX = 80       # characters per value taken from a project (label, file or branch name)
+
+
+def safe(text, line_max=LINE_MAX):
+    """Text that is safe to print in a terminal. Removes every control character but the newline
+    (ESC, so no escape sequences: colours, cursor moves, window titles, hyperlinks) and every
+    invisible format character (bidi overrides, zero-width marks), and caps each line's length.
+    Applied to everything the user sees, because labels, file and branch names come from projects."""
+    import unicodedata
+    out = []
+    for line in str(text or "").replace("\r\n", "\n").split("\n"):
+        line = "".join(" " if c == "\t" else c for c in line
+                       if c == "\t" or unicodedata.category(c) not in ("Cc", "Cf"))
+        out.append(line if len(line) <= line_max else line[:line_max - 1] + "…")
+    return "\n".join(out[:40])
+
+
+def clip(value, n=ITEM_MAX):
+    """A project-supplied value on one line, at most n characters."""
+    v = " ".join(safe(value, 10_000).split())
+    return v if len(v) <= n else v[:n - 1] + "…"
+
+
+ASCII_MAP = str.maketrans({"▸": ">", "✓": "+", "⚠": "!", "⏸": "||", "→": "->", "—": "-", "–": "-",
+                           "·": "|", "…": "...", "≠": "!=", "§": "S", "×": "x"})
+
+
+def ascii_only(env):
+    """True when the user's terminal may not show UTF-8: WF_ASCII=1, or a locale that isn't UTF-8."""
+    if (env or {}).get("WF_ASCII") == "1":
+        return True
+    loc = next(((env or {}).get(k) for k in ("LC_ALL", "LC_CTYPE", "LANG") if (env or {}).get(k)), "")
+    return bool(loc) and loc not in ("C", "POSIX") and not re.search(r"utf-?8", loc, re.I)
+
+
+def for_terminal(text, env):
+    """The final form of a line the user sees: safe, and plain ASCII if the terminal needs it."""
+    text = safe(text)
+    if ascii_only(env):
+        text = text.translate(ASCII_MAP).encode("ascii", "replace").decode("ascii")
+    return text
+
+
 def output(event, text, show=None):
     """Hook JSON: `text` goes to Claude (additionalContext), `show` is a line only the user sees."""
     out = {}
     if text:
         out["hookSpecificOutput"] = {"hookEventName": event, "additionalContext": text}
     if show:
-        out["systemMessage"] = "WF ▸ " + show
+        out["systemMessage"] = "WF ▸ " + safe(show)
     return out or None
 
 
@@ -356,7 +401,7 @@ def _project_statusline(cwd):
     root = Path(repo_root(cwd) or cwd) if cwd else None
     for name in ("settings.local.json", "settings.json"):
         try:
-            if root and json.loads((root / ".claude" / name).read_text()).get("statusLine"):
+            if root and json.loads((root / ".claude" / name).read_text(encoding="utf-8")).get("statusLine"):
                 return root / ".claude" / name
         except Exception:
             pass
@@ -369,7 +414,7 @@ def _is_ours(statusline_setting):
 
 def _plugin_config(env):
     try:
-        return json.loads((data_dir(env) / "config.json").read_text())
+        return json.loads((data_dir(env) / "config.json").read_text(encoding="utf-8"))
     except Exception:
         return {}
 
@@ -471,7 +516,7 @@ def statusline_chain(raw_stdin, env, previous=None):
     if previous:
         try:
             before = subprocess.run(previous, shell=True, input=raw_stdin, capture_output=True, text=True,
-                                    timeout=3).stdout.rstrip("\n")
+                                    encoding="utf-8", errors="replace", timeout=3).stdout.rstrip("\n")
         except Exception:
             before = ""
     try:
@@ -890,16 +935,16 @@ def gate_line(n, entry):
         return head + " · no checklist lines in the gate message · /wf ok to approve"
     tail = []
     if entry["missing"]:
-        tail.append("missing: " + ", ".join(entry["missing"]))
+        tail.append("missing: " + ", ".join(clip(l) for l in entry["missing"]))
     by_reason = {}
     for label in entry.get("unverified") or []:
         by_reason.setdefault((entry.get("reasons") or {}).get(label, "not checked"), []).append(label)
     for why, labels in by_reason.items():
-        tail.append(f"{why}: " + ", ".join(labels))
+        tail.append(f"{clip(why)}: " + ", ".join(clip(l) for l in labels))
     if entry.get("file_note"):
-        tail.append(entry["file_note"])
+        tail.append(clip(entry["file_note"], 2 * ITEM_MAX))
     elif entry.get("file"):
-        tail.append(f"{entry.get('checked') or 0} quoted in {entry['file']}")
+        tail.append(f"{entry.get('checked') or 0} quoted in {clip(entry['file'])}")
     if entry.get("claimed"):
         tail.append(f"{len(entry['claimed'])} claimed, not checked")
     tail.append("content not judged — your review · /wf ok to approve")
@@ -1325,7 +1370,7 @@ def old_hooks_warning(cwd):
     for name in ("settings.json", "settings.local.json"):
         p = root / ".claude" / name
         try:
-            if SPINE in p.read_text() or "[Workflow] phases in order" in p.read_text():
+            if SPINE in p.read_text(encoding="utf-8") or "[Workflow] phases in order" in p.read_text(encoding="utf-8"):
                 return (f"\n\nAlso tell the user: `{p.relative_to(root)}` still has the old manual workflow hooks, "
                         "so the spine is loaded twice. Remove those two hooks; the wf plugin replaces them.")
         except Exception:
@@ -1432,7 +1477,7 @@ def handle(event, payload, env):
     out = _handle(event, payload, env, store, cwd, fn)
     if followed:
         st = store.load(cwd)
-        line = (f"WF ▸ branch changed {followed} → {repo_identity(cwd)[1]} · skin follows "
+        line = (f"WF ▸ branch changed {clip(followed)} → {clip(repo_identity(cwd)[1])} · skin follows "
                 f"({describe(st).split(', ', 1)[-1]})")
         out = out or {}
         out["systemMessage"] = line + ("\n" + out["systemMessage"] if out.get("systemMessage") else "")
@@ -1461,7 +1506,9 @@ def statusline(payload, env):
     state = Store(env).load(cwd)
     if state["enabled"] == "off":
         return ""
-    ph = "–" if state["phase"] is None else state["phase"]
+    ph = state["phase"] if isinstance(state["phase"], int) and 0 <= state["phase"] <= 10 else "–"
+    if state["level"] not in LEVELS:
+        state["level"] = DEFAULT_LEVEL
     if state["enabled"] == "paused":
         return f"[WF ⏸ P{ph}]"
     entry = (state.get("timeline") or {}).get(str(state["phase"]), {})
@@ -1471,11 +1518,31 @@ def statusline(payload, env):
     return "[WF " + " · ".join(x for x in (head, marks, state["level"]) if x) + "]"
 
 
+def log_error(env, event):
+    """Append the current exception to <data dir>/wf-error.log (kept under ~200 KB). Returns its path."""
+    import traceback
+    p = data_dir(env) / "wf-error.log"
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if p.exists() and p.stat().st_size > 200_000:
+            p.write_text("", encoding="utf-8")
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + f"[{event}]\n" + traceback.format_exc() + "\n")
+    except OSError:
+        pass
+    return p
+
+
+def _write(text):
+    sys.stdout.buffer.write(text.encode("utf-8"))
+    sys.stdout.flush()
+
+
 def main(argv):
     event = argv[1] if len(argv) > 1 else ""
     env = dict(os.environ)
     try:
-        raw = sys.stdin.read()
+        raw = sys.stdin.buffer.read().decode("utf-8", errors="replace")   # never the locale's encoding
         if event in ("statusline", "statusline-chain"):
             # The status line runs outside the plugin: our state dir is this script's own dir.
             env.setdefault("CLAUDE_PLUGIN_DATA", str(Path(__file__).resolve().parent))
@@ -1483,14 +1550,26 @@ def main(argv):
                 line = statusline_chain(raw, env, argv[2] if len(argv) > 2 else None)
             else:
                 line = statusline(json.loads(raw or "{}"), env)
-            print(line, end="")
+            _write(for_terminal(line, env).replace("\n", " "))
             return
-        payload = json.loads(raw or "{}")
+        try:
+            payload = json.loads(raw or "{}")
+        except ValueError:
+            return   # not a hook payload: nothing to act on, nothing to report
         out = handle(event, payload, env)
+        if out and out.get("systemMessage"):
+            out["systemMessage"] = for_terminal(out["systemMessage"], env)
         if out:
-            print(json.dumps(out))
+            _write(json.dumps(out))
     except Exception:
-        pass  # never break the session
+        # Never break the session, but never fail silently either: one line, details in a log file.
+        p = log_error(env, event)
+        with contextlib.suppress(Exception):
+            if event in ("statusline", "statusline-chain"):
+                _write("[WF error]")
+            elif event in HANDLERS:
+                _write(json.dumps({"systemMessage": for_terminal(f"WF ▸ internal error ({event}) — "
+                                                                 f"details in {p}", env)}))
 
 
 if __name__ == "__main__":

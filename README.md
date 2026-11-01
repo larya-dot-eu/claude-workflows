@@ -239,6 +239,12 @@ WF ▸ ⚠ Gate P7 marker at Phase 3 not applied — phases move one at a time, 
   approved gate (you jumping ahead with `/wf <n>`) is marked *skipped*, so the timeline always shows which
   gates were really approved.
 - **Status line** — `[WF P3 70% · ✓✓⚠ · standard]` (current phase, its checklist %, earlier phases).
+- **Safe output** — every line the plugin prints is cleaned first: control characters (terminal escape
+  sequences), invisible bidi/zero-width characters are removed and lines are length-capped, because
+  checklist labels, file names and branch names come from the project. If your locale isn't UTF-8
+  (e.g. `LANG=de_DE.ISO-8859-1`), or you set `WF_ASCII=1`, symbols become plain ASCII (`>`, `+`, `!`).
+  If the plugin itself fails, you see one line, `WF ▸ internal error (<hook>) — details in …/wf-error.log`,
+  instead of a silent gap; the session is never interrupted.
 - **strict** — when a gate has missing items, Claude gets one extra turn to do them (or mark them N/A with a
   reason) and ends at the gate again. Once per gate; never while Claude is asking you a question.
 
