@@ -3,7 +3,7 @@
 A single, battle-tested process file for using an AI coding agent (Claude Code, Cursor, etc.) on real
 features without shipping self-inflicted outages or security holes.
 
-**Version:** v2.0.2 — the workflow as an invisible Claude Code plugin (`/wf on`), now with `/wf help` and a one-command status line. Previous: [v2.0.1](https://github.com/larya-dot-eu/claude-workflows/releases/tag/v2.0.1) — see [Releases](https://github.com/larya-dot-eu/claude-workflows/releases) for changelog.
+**Version:** v2.1.0 — gates that work in any language: spec/plan items are checked by exact quotes, gates are approved only with `/wf ok`, Claude can't move phases on its own, safe terminal output, and the rules summary goes to Claude once per session with no extra file reads. Previous: [v2.0.2](https://github.com/larya-dot-eu/claude-workflows/releases/tag/v2.0.2) — see [Releases](https://github.com/larya-dot-eu/claude-workflows/releases) for changelog.
 
 **→ [`Claude-Workflows-Best-Practices.md`](./Claude-Workflows-Best-Practices.md)**
 
@@ -118,6 +118,10 @@ Then start a new session (or run `/reload-plugins`) so the hooks load.
   `/wf help` answers in your terminal. Installing changes nothing yet — the skin stays off until `/wf on`.
 - **Update:** `claude plugin update wf@claude-workflows`, then a new session. To get updates
   automatically, turn on auto-update for the `claude-workflows` marketplace in `/plugin` → Marketplaces.
+  Your phases, timeline and settings live outside the plugin folder and are kept across updates. A
+  session that is already running keeps the old version until `/reload-plugins` or a new session.
+  **From v2.0.x to v2.1.0:** approve gates with `/wf ok` (typing "approved" no longer approves), and
+  (file) checklist items now quote the spec/plan word for word.
 - **Remove:** `claude plugin uninstall wf@claude-workflows` (or disable it in `/plugin`). Its memory of
   phases lives in `~/.claude/plugins/data/wf-claude-workflows/` — delete that folder to forget everything.
 - **Nothing happens?** Check `python3 --version` (without Python the skin silently does nothing), then

@@ -318,9 +318,19 @@ def show_status(state):
     return line + (f"\n   {tl}" if tl and (state.get("timeline") or {}) else "")
 
 
-def skin_context(state, env, cwd, with_phase=True, budget=LIMIT):
-    """What Claude needs while the skin is on: spine (or lite rules) + current phase section,
-    kept under `budget` characters (a phase that doesn't fit is given as an exact line range to read)."""
+SESSION = {"id": None}   # the Claude Code session of the hook event being handled (set in handle())
+
+
+def has_context(state):
+    """True when this session's context already holds the rules summary the plugin sent."""
+    sid = SESSION["id"]
+    return bool(sid) and state.get("ctx_session") == sid
+
+
+def skin_context(state, env, cwd, with_phase=True, budget=LIMIT, fresh=False):
+    """What Claude needs while the skin is on: spine (or lite rules) + current phase section, kept under
+    `budget` characters. Sent once per session: when this session already has the spine (and the phase
+    section), only a one-line reminder goes out. `fresh` (session start, /clear, compaction) resends it."""
     spine = read_doc(SPINE, env, cwd)
     if not spine:
         spine = (f"(Workflow rules file not found: `{SPINE}` is neither in this project nor in the plugin. "
@@ -328,20 +338,40 @@ def skin_context(state, env, cwd, with_phase=True, budget=LIMIT):
     if state["level"] == "lite":
         rules = every_phase_rules(spine) or spine
         return "Claude-Workflows skin (lite): apply these rules in every step.\n\n" + rules
-    parts = ["Claude-Workflows skin is on (level %s). This project follows the phased workflow below; "
-             "the user clears every exit gate. When you reach a phase's exit gate, end your message with "
-             "the line `[[gate P<n>]]` (n = the phase number) and wait for the user. The user approves a gate only by "
-             "typing `/wf ok`; never treat other words as approval, in any language. If you answer a question "
-             "while still waiting at that gate, end that message with the same line again. Going back to an earlier "
-             "phase (e.g. the Phase 5 loop-back table) is the user's call: recommend it and ask them to type "
-             "`/wf <n>`." % state["level"],
-             spine]
-    if state["level"] == "strict":
-        parts.append("Strict level: run Phase 5 as one fresh-context subagent on the most capable model; "
-                     "the Quick tier always needs the user's explicit confirmation.")
-    head = "\n\n".join(p for p in parts if p)
-    if with_phase and state["phase"] is not None:
-        head += "\n\n" + phase_context(state["phase"], env, cwd, budget - len(head) - 2)
+    if has_context(state) and not fresh:
+        head = ("The Claude-Workflows rules and gate instructions sent earlier in this session still apply "
+                f"(level {state['level']}).")
+    else:
+        parts = ["Claude-Workflows skin is on (level %s). This project follows the phased workflow below; "
+                 "the user clears every exit gate. When you reach a phase's exit gate, end your message with "
+                 "the line `[[gate P<n>]]` (n = the phase number) and wait for the user. The user approves a gate only by "
+                 "typing `/wf ok`; never treat other words as approval, in any language. If you answer a question "
+                 "while still waiting at that gate, end that message with the same line again. Going back to an earlier "
+                 "phase (e.g. the Phase 5 loop-back table) is the user's call: recommend it and ask them to type "
+                 "`/wf <n>`." % state["level"],
+                 spine]
+        if state["level"] == "strict":
+            parts.append("Strict level: run Phase 5 as one fresh-context subagent on the most capable model; "
+                         "the Quick tier always needs the user's explicit confirmation.")
+        head = "\n\n".join(p for p in parts if p)
+        state["injected"] = None   # a fresh context has no phase section yet
+    ph = state["phase"]
+    state["phase_due"] = None
+    if with_phase and ph is not None:
+        if state.get("injected") == ph and has_context(state) and not fresh:
+            head += f" The Phase {ph} rules sent earlier in this session still apply."
+        else:
+            section = phase_context(ph, env, cwd, budget - len(head) - 2, allow_read=False)
+            if section is not None:
+                head += "\n\n" + section
+                state["injected"] = ph
+            else:
+                # Spine and section don't fit in one hook message: the section comes with the user's next
+                # message (see on_prompt) instead of an instruction to read a file outside the project.
+                head += (f"\n\nCurrent phase: {ph} ({PHASE_NAMES.get(ph, '?')}). Its full rules come with the "
+                         "user's next message; until then work from the summary above.")
+                state["phase_due"] = ph
+    state["ctx_session"] = SESSION["id"]
     return head
 
 
@@ -355,7 +385,7 @@ def phase_lines(doc_text, n):
     return first, first + section.count("\n")
 
 
-def phase_context(n, env, cwd, budget=LIMIT):
+def phase_context(n, env, cwd, budget=LIMIT, allow_read=True):
     doc = read_doc(DOC, env, cwd)
     lead = f"Current phase: {n} ({PHASE_NAMES.get(n, '?')}). "
     rule = "\n\n" + checklist_instruction(n, checks_from_doc(doc, n) or CHECKS.get(n, []))
@@ -365,6 +395,8 @@ def phase_context(n, env, cwd, budget=LIMIT):
     text = lead + "Full rules for this phase:\n\n" + phase_section(doc, n) + rule
     if len(text) <= budget:
         return text
+    if not allow_read and len(text) <= LIMIT:
+        return None   # fits in a message of its own: the caller sends it separately
     lines = phase_lines(doc, n)
     where = f" lines {lines[0]}–{lines[1]}" if lines else ""
     return (lead + f"Its rules are too long to include here: read `{doc_path(DOC, env, cwd)}`{where} "
@@ -623,7 +655,7 @@ def run_command(cmd, args, state, store, env, cwd):
         if state["phase"] is None and state["level"] != "lite":
             n, why = guess_phase(cwd, state.get("completed_at") or 0, state.get("dirs"))
             if n is not None:
-                state.update(phase=n, injected=n)
+                state.update(phase=n)
                 guess = (f"\n\nNo saved phase for this branch on this machine; {why}. Ask the user: "
                          f"\"Looks like Phase {n} ({PHASE_NAMES[n]}) — correct? (`/wf <n>` to change)\"")
         lead = f"{tell}workflow skin ON ({describe(state)})." + guess + old_hooks_warning(cwd) + "\n\n"
@@ -641,7 +673,7 @@ def run_command(cmd, args, state, store, env, cwd):
         return state, (tell + "workflow skin PAUSED (phase kept; `/wf resume` continues). Until it is "
                        "resumed, ignore the workflow phases and gate markers.")
     if cmd == "off":
-        state.update(enabled="off", phase=None, gate_pending=None, injected=None)
+        state.update(enabled="off", phase=None, gate_pending=None, injected=None, ctx_session=None)
         return state, (tell + "workflow skin OFF. From now on ignore the workflow phases, gates and "
                        "gate markers injected earlier in this session.")
     if cmd == "default" and args and args[0] in LEVELS:
@@ -682,7 +714,7 @@ def run_command(cmd, args, state, store, env, cwd):
         if state["enabled"] == "off":
             state["enabled"] = "on"
         move_to(state, n)
-        state.update(gate_pending=None, injected=n)
+        state.update(gate_pending=None)
         lead = f"{tell}moved to Phase {n} ({PHASE_NAMES[n]}).\n\n"
         return state, lead + skin_context(state, env, cwd, budget=LIMIT - len(lead))
     if cmd == "new":
@@ -690,7 +722,7 @@ def run_command(cmd, args, state, store, env, cwd):
             state["enabled"] = "on"
         store.unfollow(cwd, state)
         new_feature(state)
-        state.update(phase=0, injected=0)
+        state.update(phase=0)
         lead = f"{tell}new feature — starting at the tier check.\n\n"
         return state, lead + skin_context(state, env, cwd, budget=LIMIT - len(lead))
     return None, "Show the user in one line: unknown /wf command. " + HELP
@@ -1077,7 +1109,7 @@ def enter_phase(state, n, env, cwd, lead):
     move_to(state, n)
     state["gate_pending"] = None
     text = lead
-    if state.get("injected") != n:
+    if state.get("injected") != n or not has_context(state):
         text += "\n\n" + phase_context(n, env, cwd)
         state["injected"] = n
     return text
@@ -1511,9 +1543,23 @@ def on_prompt(payload, env, store, cwd):
     note = state.pop("notice", None)
     if note:   # tell Claude what the Stop hook refused last turn (a Stop line reaches only the user)
         store.save(cwd, state)
-        out = out or {}
-        hso = out.setdefault("hookSpecificOutput", {"hookEventName": "UserPromptSubmit", "additionalContext": ""})
-        hso["additionalContext"] = ("wf: " + note + "\n\n" + hso.get("additionalContext", "")).strip()
+        out = _add_context(out, "wf: " + note, first=True)
+    due = state.get("phase_due")
+    if engine_on(state) and due is not None and due == state["phase"] and has_context(state):
+        current = ((out or {}).get("hookSpecificOutput") or {}).get("additionalContext", "")
+        section = phase_context(due, env, cwd, LIMIT - len(current) - 2, allow_read=False)
+        if section is not None:   # else it waits for a message with room
+            state.update(phase_due=None, injected=due)
+            store.save(cwd, state)
+            out = _add_context(out, section)
+    return out
+
+
+def _add_context(out, text, first=False):
+    out = out or {}
+    hso = out.setdefault("hookSpecificOutput", {"hookEventName": "UserPromptSubmit", "additionalContext": ""})
+    cur = hso.get("additionalContext", "")
+    hso["additionalContext"] = ((text + "\n\n" + cur) if first else (cur + "\n\n" + text)).strip()
     return out
 
 
@@ -1558,7 +1604,9 @@ def on_session_start(payload, env, store, cwd):
     state = store.load(cwd)
     if state["enabled"] != "on":
         return None
-    return output("SessionStart", skin_context(state, env, cwd))
+    text = skin_context(state, env, cwd, fresh=True)   # startup, /clear or compaction: the context is new
+    store.save(cwd, state)
+    return output("SessionStart", text)
 
 
 HANDLERS = {
@@ -1580,6 +1628,7 @@ def handle(event, payload, env):
     if not fn:
         return None
     repo_identity.cache_clear()
+    SESSION["id"] = payload.get("session_id")
     store = Store(env)
     followed = None
     if store.dir.is_dir() and not store.path(cwd).exists() and store.pointer(cwd).exists():

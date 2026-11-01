@@ -192,7 +192,8 @@ class TestStateAndCommands(unittest.TestCase):
         self.e.prompt("/wf 4")
         out = self.e.run("SessionStart", source="compact")
         self.assertIn("Phases — do → exit gate", ctx(out))
-        self.assertRegex(ctx(out), r"## Phase 4|Current phase: 4 .*lines \d+–\d+")
+        self.assertRegex(ctx(out), r"## Phase 4|Current phase: 4 .*come with the user's next message")
+        self.assertIn("## Phase 4", ctx(out) + ctx(self.e.prompt("go on")))
 
     def test_project_copy_of_doc_wins(self):
         (self.e.repo / "Claude-Workflows-Best-Practices.md").write_text(
@@ -1188,7 +1189,7 @@ class TestEarlierGateIsARecap(EngineCase):
         self.assertIn("/wf 4", shown(out))
 
     def test_skin_tells_claude_loop_backs_are_the_users_call(self):
-        self.assertIn("`/wf <n>`", ctx(self.e.prompt("/wf 5")))
+        self.assertIn("`/wf <n>`", ctx(self.e.run("UserPromptSubmit", prompt="/wf 5", session_id="new")))
 
     def test_loop_back_still_works_with_wf_n(self):
         self.e.prompt("/wf new")
@@ -1782,4 +1783,82 @@ class TestGoldenGateLines(unittest.TestCase):
         ]
         for entry, want in cases:
             self.assertEqual(wf.gate_line(3, entry), want)
+
+
+class TestContextOncePerSession(unittest.TestCase):
+    """The rules summary goes to Claude once per session, phase sections are inline (never 'read
+    lines X–Y' of a file outside the project, which costs a read and a permission prompt), and a
+    section already sent in this session is not sent again."""
+
+    def setUp(self):
+        self.e = Env()
+
+    def tearDown(self):
+        self.e.close()
+
+    def p(self, text, sid="s1"):
+        return ctx(self.e.run("UserPromptSubmit", prompt=text, session_id=sid))
+
+    def test_no_command_ever_asks_claude_to_read_the_doc(self):
+        for level in ("standard", "strict"):
+            for sid in ("a", "b"):
+                texts = [self.p(f"/wf on {level}", sid)] + [self.p(f"/wf {n}", sid) for n in range(11)]
+                texts += [self.p("/wf pause", sid), self.p("/wf resume", sid), self.p("/wf new", sid)]
+                texts.append(ctx(self.e.run("SessionStart", source="compact", session_id=sid)))
+                for t in texts:
+                    self.assertNotIn("too long to include", t)
+                    self.assertNotIn("with the Read tool", t)
+                    self.assertLess(len(t), wf.LIMIT + 1)
+
+    def test_every_phase_section_fits_inline_after_the_spine(self):
+        doc = (ROOT / "Claude-Workflows-Best-Practices.md").read_text()
+        for n in range(11):
+            self.p("/wf on", sid=f"fresh{n}")
+            self.assertIn(wf.phase_section(doc, n).strip()[:40], self.p(f"/wf {n}", sid=f"fresh{n}"), n)
+
+    def test_spine_is_sent_once_per_session(self):
+        self.assertIn("Prime rule", self.p("/wf on"))
+        t = self.p("/wf 3")
+        self.assertNotIn("Prime rule", t)
+        self.assertIn("## Phase 3", t)
+        self.assertIn("still apply", t)
+        self.assertIn("Prime rule", self.p("/wf 4", sid="s2"))          # another session: sent again
+
+    def test_same_phase_section_is_not_resent_in_the_session(self):
+        self.p("/wf on")
+        self.assertIn("## Phase 3", self.p("/wf 3"))
+        again = self.p("/wf 3")
+        self.assertNotIn("## Phase 3", again)
+        self.assertIn("Phase 3 rules sent earlier in this session still apply", again)
+
+    def test_session_start_and_compaction_always_resend(self):
+        self.p("/wf on")
+        self.p("/wf 3")
+        for source in ("startup", "clear", "compact"):
+            t = ctx(self.e.run("SessionStart", source=source, session_id="s1"))
+            self.assertIn("Prime rule", t, source)
+            nxt = self.p("let's continue")              # a long section rides on the next message
+            self.assertIn("## Phase 3", t + nxt, source)
+            self.assertNotIn("## Phase 3", self.p("and then?"), source)   # once
+
+    def test_long_phase_after_a_fresh_spine_comes_with_the_next_message(self):
+        self.p("/wf on")
+        self.p("/wf 10")
+        t = ctx(self.e.run("SessionStart", source="compact", session_id="s1"))
+        self.assertNotIn("## Phase 10 — Deployment", t)
+        self.assertIn("come with the user's next message", t)
+        self.assertIn("## Phase 10 — Deployment", self.p("next"))
+
+    def test_off_then_on_resends(self):
+        self.p("/wf on")
+        self.p("/wf off")
+        self.assertIn("Prime rule", self.p("/wf on"))
+
+    def test_approval_sends_the_next_phase_once(self):
+        self.p("/wf on")
+        self.p("/wf 3")
+        self.e.run("Stop", last_assistant_message="spec\n[[gate P3]]", session_id="s1")
+        t = self.p("/wf ok")
+        self.assertIn("## Phase 4", t)
+        self.assertNotIn("Prime rule", t)
 
