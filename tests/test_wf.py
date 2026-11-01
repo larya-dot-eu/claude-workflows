@@ -866,12 +866,12 @@ def passage(i):
 QUOTE_SPEC = "Spec\n\n" + "\n\n".join(passage(i) for i in range(20)) + "\n"
 
 
-def quoted(n):
-    """A gate message for phase n whose (file) items each quote their own passage of QUOTE_SPEC."""
+def quoted(n, passages=None):
+    """A gate message for phase n whose (file) items each quote their own passage (of QUOTE_SPEC)."""
     lines, i = [], 0
     for label, is_file in wf.CHECKS[n]:
         if is_file:
-            lines.append(f'- {label}: "{passage(i)}" (section {i})')
+            lines.append(f'- {label}: "{(passages or [passage(k) for k in range(20)])[i]}" (section {i})')
             i += 1
         else:
             lines.append(f"- {label}: covered in the gate message")
@@ -1717,3 +1717,69 @@ class TestProtectedChecks(EngineCase):
     def test_hooks_json_routes_file_writes_to_the_guard(self):
         hooks = json.loads((ROOT / "hooks/hooks.json").read_text())["hooks"]["PreToolUse"]
         self.assertTrue(any("Write" in h.get("matcher", "") and "Edit" in h["matcher"] for h in hooks))
+
+
+class TestWholeFeatureAnyLanguage(EngineCase):
+    """One feature from Phase 0 to Phase 10 with a spec and plan in mixed scripts, no headings or
+    numbering, approved only with /wf ok: every gate is 100%, nothing is flagged, nothing skipped."""
+
+    def mixed_passages(self, seed):
+        rng = random.Random(seed)
+        abc = "aăâbcçdeéèfgğhiîıjklmnñoöpqrsșştțuüvwxyzßαβγδεζηθжзийклмнあいうえおかきくけこابتثجح"
+        return [" ".join("".join(rng.choice(abc) for _ in range(rng.randint(3, 8))) for _ in range(6))
+                for _ in range(12)]
+
+    def test_full_walk(self):
+        spec_p, plan_p = self.mixed_passages(1), self.mixed_passages(2)
+        self.skill("superpowers:brainstorming")
+        first = checklist(0).rsplit("\n\n", 1)[0] + "\n" + checklist(1)
+        lines = [shown(self.stop(first))]
+        self.e.prompt("/wf ok")
+        for n in range(2, 11):
+            self.assertEqual(self.e.state()["phase"], n)
+            if n == 3:
+                d = self.e.repo / "docs/specs"
+                d.mkdir(parents=True)
+                (d / "feature").write_text("\n\n".join(spec_p) + "\n", encoding="utf-8")   # no extension
+                msg = quoted(3, spec_p)
+            elif n in (4, 6, 7):
+                d = self.e.repo / "docs/plans"
+                d.mkdir(parents=True, exist_ok=True)
+                (d / "plan.txt").write_text("\n".join("* " + p for p in plan_p) + "\n", encoding="utf-8")
+                msg = quoted(n, plan_p)
+            else:
+                msg = checklist(n)
+            lines.append(shown(self.stop(msg)))
+            out = self.e.prompt("/wf ok")
+            self.assertIn(f"Gate P{n} approved via /wf ok", shown(out))
+        for line in lines:
+            self.assertIn("(100%)", line)
+            self.assertNotIn("⚠", line)
+            self.assertIn("content not judged", line)
+        for n, name in ((3, "feature"), (4, "plan.txt"), (6, "plan.txt"), (7, "plan.txt")):
+            self.assertIn(f"quoted in {name}", lines[n - 1], n)
+        self.assertIsNone(self.e.state()["phase"])          # feature complete
+
+
+class TestGoldenGateLines(unittest.TestCase):
+    """The exact wording of each kind of gate line (what the user reads)."""
+
+    def test_golden(self):
+        base = {"found": 7, "total": 10, "missing": ["expected scale"], "unverified": ["reuse", "assumptions"],
+                "reasons": {"reuse": "quote not in file", "assumptions": "no quote"},
+                "claimed": ["codebase checkpoint"], "listed": 10, "file": "s.md", "checked": 6}
+        cases = [
+            ({"total": 0}, "Gate P3 reached · /wf ok to approve"),
+            (dict(base, listed=0), "Gate P3 reached · checklist 7/10 (70%) · no checklist lines in the gate message"
+                                   " · /wf ok to approve"),
+            (base, "Gate P3 reached · checklist 7/10 (70%) · missing: expected scale · quote not in file: reuse"
+                   " · no quote: assumptions · 6 quoted in s.md · 1 claimed, not checked"
+                   " · content not judged — your review · /wf ok to approve"),
+            (dict(base, file=None, file_note="no spec file changed since this feature started — quotes not checked"),
+             "Gate P3 reached · checklist 7/10 (70%) · missing: expected scale · quote not in file: reuse"
+             " · no quote: assumptions · no spec file changed since this feature started — quotes not checked"
+             " · 1 claimed, not checked · content not judged — your review · /wf ok to approve"),
+        ]
+        for entry, want in cases:
+            self.assertEqual(wf.gate_line(3, entry), want)
+

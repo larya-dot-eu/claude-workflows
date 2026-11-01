@@ -139,14 +139,14 @@ What a feature looks like:
 |---|---|
 | `/wf on` | `WF ▸ on · standard · no phase yet` |
 | "Let's add CSV export to reports" | `WF ▸ brainstorming started → Phase 0 (Tier + Prereqs)` |
-| *(Claude summarises the project and the request, ends with its checklist)* | `WF ▸ Gate P1 reached · checklist 8/8 (100%) · all items ✓` |
+| *(Claude summarises the project and the request, ends with its checklist)* | `WF ▸ Gate P1 reached · checklist 8/8 (100%) · 8 claimed, not checked · content not judged — your review · /wf ok to approve` |
 | `/wf ok` | `WF ▸ Gate P1 approved via /wf ok → Phase 2 (Explore)` |
 | *(questions … the spec)* | `WF ▸ Gate P3 reached · checklist 8/10 (80%) · missing: access-control matrix, expected scale · … · content not judged — your review` |
-| "the matrix: only report owners may export" | *(Claude adds it and ends at the gate again)* `· checklist 10/10` |
+| "the matrix: only report owners may export" | `WF ▸ Gate P3 still waiting — this message is feedback; type /wf ok to approve` · *(Claude adds it and ends at the gate again)* `· checklist 10/10` |
 | `/wf ok` | `WF ▸ Gate P3 approved via /wf ok → Phase 4 (Plan)` … and so on to Phase 10 |
 | `/wf status` | `P0 ✓ · P1 ✓ · P2 ✓ · P3 ✓ · P4 70% (gate)` |
 
-You never type "read the workflow file" or "now do phase 4" — approving a gate is enough.
+You never type "read the workflow file" or "now do phase 4" — `/wf ok` at a gate is enough.
 
 ### Which level when
 
@@ -170,7 +170,7 @@ in `.claude/settings.json`, that one wins inside the project — `/wf statusline
 - **Once per machine:** `/wf default standard` and `/wf statusline` (so the phase is always under your
   prompt — no manual editing; `/wf statusline off` undoes it).
 - **One feature, one `/wf new`** (brainstorming does it for you). On a feature branch it becomes its own feature.
-- **Read the "missing:" list before you approve.** The % shows what was *addressed*, not whether it's good.
+- **Read the gate line before you type `/wf ok`.** The % shows what was *addressed* (quotes found, items claimed), not whether it's good.
 - **`/wf pause` for detours** (a spike, a side question, an unrelated fix), then `/wf resume` — not
   `off`, which forgets the phase.
 - **Go back on purpose only:** when Phase 5 sends the plan back, type `/wf 4`. Claude recommends it; you decide.
@@ -220,7 +220,7 @@ the one exception is a refused gate marker, which Claude is told about once, on 
 ```
 WF ▸ brainstorming started → Phase 0 (Tier + Prereqs)
 WF ▸ Gate P1 approved via /wf ok → Phase 2 (Explore)
-WF ▸ Gate P3 reached · checklist 8/10 (80%) · missing: expected scale · quote not in file: reuse · 7 quoted in 2026-11-01-report.md · 1 claimed, not checked · content not judged — your review
+WF ▸ Gate P3 reached · checklist 8/10 (80%) · missing: expected scale · quote not in file: reuse · 7 quoted in 2026-11-01-report.md · 1 claimed, not checked · content not judged — your review · /wf ok to approve
 WF ▸ ⚠ writing-plans — spec (Phase 3) is not approved yet — /wf ok first
 WF ▸ ⚠ Gate P7 marker at Phase 3 not applied — phases move one at a time, only with your /wf ok (current: Phase 3)
 ```
@@ -254,13 +254,13 @@ WF ▸ ⚠ Gate P7 marker at Phase 3 not applied — phases move one at a time, 
   (e.g. `LANG=de_DE.ISO-8859-1`), or you set `WF_ASCII=1`, symbols become plain ASCII (`>`, `+`, `!`).
   If the plugin itself fails, you see one line, `WF ▸ internal error (<hook>) — details in …/wf-error.log`,
   instead of a silent gap; the session is never interrupted.
-- **strict** — when a gate has missing items, Claude gets one extra turn to do them (or mark them N/A with a
-  reason) and ends at the gate again. Once per gate; never while Claude is asking you a question.
+- **strict** — when a gate has missing items, Claude gets one extra turn to do them (or mark them `n/a` with a
+  reason, or quote the file) and ends at the gate again. Once per gate; never while Claude is asking you a question.
 
 **With Superpowers.** When the skin is on, the skills drive the phases: `brainstorming` starts a feature
-at the tier check, `writing-plans` enters Phase 4 (and is told not to ask for an execution method yet),
-`subagent-driven-development` / `executing-plans` enter Phase 7 — or warn and stop if Phases 5–6
-haven't happened — and `finishing-a-development-branch` is held until Phases 8–9 are approved. Keep
+at the tier check, `writing-plans` runs in Phase 4 (and is told not to ask for an execution method yet),
+`subagent-driven-development` / `executing-plans` run in Phase 7 — a skill started before its gate is
+approved with `/wf ok` gets a stop warning and never moves the phase — and `finishing-a-development-branch` is held until Phases 8–9 are approved. Keep
 the override block from the full doc's *Running on Superpowers* section in your `CLAUDE.md`:
 Superpowers only guarantees that `CLAUDE.md` outranks its skills.
 
